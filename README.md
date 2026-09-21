@@ -10,7 +10,26 @@
 
 **The bridge connects the two sides. It does not replace DSH, modify DSH core, or route DSH model traffic through ChatGPT.**
 
-Current package: **v0.5.1**, targeting DeepSeek Harness **0.1.5-rc.2**. After a successful connection, ChatGPT should see **tool count = 23**.
+Current package: **v0.5.2**, targeting DeepSeek Harness **0.1.5-rc.2**. After a successful connection, ChatGPT should see **tool count = 23** (29 when direct operations are configured — see below).
+
+## Two ways to work
+
+The bridge exposes both on the same endpoint and the same tunnel:
+
+1. **Delegation (default, 23 tools).** ChatGPT creates a DSH session or Goal and
+   DSH runs an agent. Use this for engineering work: it keeps DSH's sandbox,
+   approvals, skills, subagents and workspace rules.
+2. **Direct operations (6 optional tools).** `dsh_read_text_file`,
+   `dsh_write_text_file`, `dsh_edit_text_file`, `dsh_run_command`,
+   `dsh_operator_roots`, `dsh_operator_reload_policy` run locally in the bridge
+   process with **no agent session and no model turn** — for small reads, small
+   edits and bounded checks that should not cost a session.
+
+Direct operations are **off until an administrator configures trusted roots**;
+writes and command execution have their own separate switches, and no tool
+argument can widen them. See [docs/direct-operations.md](docs/direct-operations.md)
+for configuration, the write-conflict model, the real (and residual) sandbox
+guarantees, and activation/rollback.
 
 ## Why this exists
 
@@ -139,7 +158,7 @@ After connecting, refresh/rescan the MCP tools in ChatGPT and run a read-only ch
 A healthy first check should look like:
 
 ```text
-bridge version = 0.5.1
+bridge version = 0.5.2
 tool count = 23
 ```
 
@@ -184,6 +203,30 @@ This is a **control bridge**, not a remote shell replacement.
 - Write/action tools are real actions. Keep approval policies appropriate for the workspace you expose.
 - Tunnel/runtime management is designed to fail closed around process ownership and lifecycle ambiguity.
 
+### Direct operations
+
+The six optional direct tools are a separate, narrower surface with their own
+rules — they do not go through DSH approvals because they do not go through DSH
+at all:
+
+- **Off by default.** Reads need configured roots, writes need a writable root,
+  command execution needs its own switch plus an explicit command allowlist.
+- **Server-side authorization only.** No tool parameter can add a root, enable a
+  capability, or approve itself.
+- **`dsh_run_command` is a high-privilege prototype that is ON HOLD.** It is not
+  sandboxed merely by a working directory, and `filesystem: roots` does **not**
+  mean "confined to the trusted roots": the OS sandbox denies named user-data
+  trees and confines writes, which is a floor rather than full path isolation.
+  It is disabled by default, is not approved as a general-purpose secure shell,
+  and must not be enabled on the strength of the current guarantees.
+  `sandbox-exec` is deprecated by Apple as well.
+- **Credential-shaped paths are refused**, but the real boundary is your root
+  list. Mount narrow roots.
+- The direct tools never create Agent sessions or consume model reasoning; that
+  is asserted by a test that fails if any Bridge method is touched.
+
+Full details, including residual risks: [docs/direct-operations.md](docs/direct-operations.md).
+
 If you only need inspection, use read-only prompts and keep DSH constraints read-only.
 
 ## What this project is not
@@ -193,6 +236,10 @@ If you only need inspection, use read-only prompts and keep DSH constraints read
 - It does **not** upload an arbitrary workspace to ChatGPT.
 - It does **not** bypass DSH approvals or sandboxing.
 - It does **not** modify DeepSeek Harness core.
+- The direct tools do **not** bypass DSH approvals, because they never enter DSH:
+  they are local operations gated by the bridge's own server-side policy instead.
+  A working directory is **not** treated as a sandbox, and no string denylist is
+  presented as one.
 
 ## Troubleshooting
 
@@ -223,10 +270,10 @@ This is an actively maintained, independent DSH plugin. Compatibility releases t
 Current package:
 
 ```text
-dsh-chatgpt-bridge@0.5.1
+dsh-chatgpt-bridge@0.5.2
 ```
 
-Compatibility: **v0.5.1 → DSH 0.1.5-rc.2**. Fresh real ChatGPT UI validation after each DSH upgrade still needs to be rechecked on your machine.
+Compatibility: **v0.5.2 → DSH 0.1.5-rc.2**. Fresh real ChatGPT UI validation after each DSH upgrade still needs to be rechecked on your machine.
 
 Distribution and ecosystem listings:
 

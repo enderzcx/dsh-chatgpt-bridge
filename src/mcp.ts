@@ -1,8 +1,18 @@
 /**
- * MCP server surface: data-plane and control-plane dsh_* tools ChatGPT calls.
- * Every tool maps onto a Bridge operation; nothing here reaches the filesystem,
- * the shell, or DSH internals directly. Outputs are JSON text blocks; failures
- * are reported as isError results with { error: { code, message } }.
+ * MCP server surface.
+ *
+ * Two families share this endpoint so ChatGPT needs one connection:
+ *
+ *   1. Agent-control tools (dsh_*) — these drive real DSH sessions, agents,
+ *      goals and approvals. They consume model reasoning and are the only way
+ *      to reach DSH internals.
+ *   2. Direct-operation tools (dsh_read_text_file, dsh_write_text_file,
+ *      dsh_edit_text_file, dsh_run_command, dsh_operator_*) — these run
+ *      locally in this process against the trusted direct-ops policy. They
+ *      create no session, invoke no agent and consume no model turn.
+ *
+ * Outputs are JSON text blocks; failures are reported as isError results with
+ * { error: { code, message } }.
  */
 import { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import { z } from 'zod';
@@ -12,6 +22,7 @@ import type { BridgeLogger } from './log.js';
 import { redactValue } from './redact.js';
 import { parseConstraints } from './goal-constraints.js';
 import { BRIDGE_NAME, BRIDGE_VERSION } from './version.js';
+import { registerDirectOpsTools, type DirectOpsRuntime } from './direct/tools.js';
 
 const actionClassSchema = z.enum([
   'filesystem.read',
@@ -71,7 +82,12 @@ function safe<A>(handler: (args: A) => Promise<unknown>) {
   };
 }
 
-export function createMcpServer(bridge: Bridge, cfg: ResolvedBridgeConfig, log: BridgeLogger): McpServer {
+export function createMcpServer(
+  bridge: Bridge,
+  cfg: ResolvedBridgeConfig,
+  log: BridgeLogger,
+  directOps?: DirectOpsRuntime,
+): McpServer {
   const server = new McpServer(
     { name: BRIDGE_NAME, version: BRIDGE_VERSION },
     { capabilities: { tools: {} } },
@@ -525,6 +541,12 @@ export function createMcpServer(bridge: Bridge, cfg: ResolvedBridgeConfig, log: 
     },
     safe(async (args: { session_id: string }) => bridge.stopGoal(args.session_id)),
   );
+
+  // Direct local operations: no agent, no session, no model turn. Registered
+  // last so the agent-control surface stays readable at the top of the file.
+  if (directOps !== undefined) {
+    registerDirectOpsTools(server, directOps);
+  }
 
   return server;
 }

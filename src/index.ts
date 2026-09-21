@@ -12,6 +12,8 @@ import { createMcpServer } from './mcp.js';
 import { startHttpServer, type HttpServerHandle } from './http.js';
 import { RuntimeManager } from './control/runtime-manager.js';
 import { createManagementApi } from './control/routes.js';
+import { createDirectOpsRuntime } from './direct/tools.js';
+import { DirectOpsError } from './direct/types.js';
 
 export const name = 'chatgpt-bridge';
 
@@ -37,6 +39,30 @@ export function apply(ctx: Context, config: BridgeConfigInput): void {
   const bridge = new Bridge(ctx, cfg, log);
   bridge.start();
 
+  // Direct local operations (no agent, no session, no model turn).
+  //
+  // A policy error here must NOT take down the agent bridge that the user is
+  // already relying on, so a bad directOps row degrades to a disabled direct
+  // surface with a loud log line instead of aborting plugin load.
+  let directOps: ReturnType<typeof createDirectOpsRuntime> | undefined;
+  try {
+    directOps = createDirectOpsRuntime(cfg.directOps ?? {});
+    const policy = directOps.policy();
+    log.info('direct operations policy resolved', {
+      enabled: policy.enabled,
+      roots: policy.roots.map((root) => root.label),
+      writes: policy.writesEnabled,
+      exec: policy.exec.enabled,
+      reloadable: directOps.reloadable,
+    });
+  } catch (error) {
+    const message = error instanceof DirectOpsError
+      ? `${error.code}: ${error.message}`
+      : error instanceof Error ? error.message : String(error);
+    log.error(`direct operations disabled: invalid configuration (${message})`);
+    directOps = undefined;
+  }
+
   // v0.4.0 Control Plane: runtime manager + management API (web profile only).
   // Bridge stays the data plane; the manager only probes the bridge endpoint.
   const controlLog = createControlLogger(cfg.dshHome, {
@@ -61,7 +87,7 @@ export function apply(ctx: Context, config: BridgeConfigInput): void {
     return () => disposeApi();
   });
 
-  const mcpServer = createMcpServer(bridge, cfg, log);
+  const mcpServer = createMcpServer(bridge, cfg, log, directOps);
   let stdioTransport: StdioServerTransport | undefined;
   let stdioReady: Promise<void> | undefined;
   let httpReady: Promise<HttpServerHandle> | undefined;
@@ -74,7 +100,7 @@ export function apply(ctx: Context, config: BridgeConfigInput): void {
     });
   } else {
     httpReady = startHttpServer(
-      () => createMcpServer(bridge, cfg, log),
+      () => createMcpServer(bridge, cfg, log, directOps),
       { host: cfg.host, port: cfg.port, authMode: cfg.authMode, authToken: cfg.authToken },
       log,
     );

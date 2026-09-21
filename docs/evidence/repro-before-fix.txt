@@ -1,0 +1,16 @@
+# Reproduction of defects A and B BEFORE the fixes (captured while the pre-fix build was loaded)
+
+Command: node /tmp/repro-a.mjs  (fixtures: synthetic file in /private/tmp, 2000-byte line)
+
+root      = <HOME>/Library/Caches/dsh-chatgpt-bridge-tests/reproA-XXXXXX
+authorised roots = [ <HOME>/Library/Caches/dsh-chatgpt-bridge-tests/reproA-XXXXXX ]
+fixture   = /private/tmp/dsh-repro-XXXXXX/outside-fixture.txt   (HOME? false)
+
+[A]   read /private fixture        => {"exit":0,"out":"OUTSIDE-FIXTURE-VALUE"}    <-- NOT authorized, yet readable
+[A2]  read /private/etc/passwd     => {"exit":0,"out":"##\n# User Database..."}   <-- system data, still readable by design
+[B]   tail page (2000-byte line)   => {"lines":1,"contentLen":2000,"truncation":"none","complete":true}
+[B2]  max_bytes=100                => returned content bytes = 2000              <-- budget NOT enforced
+
+# After the fixes (docs/evidence/repro-after-fix.txt):
+[A]   read /private fixture        => {"exit":1,"out":""}                        <-- refused
+[B2]  max_bytes=100                => returned content bytes = 94               <-- budget enforced

@@ -1,0 +1,11 @@
+root      = /Users/sunny/Library/Caches/dsh-chatgpt-bridge-tests/reproA-eqfhAl
+authorised roots = [
+  '/Users/sunny/Library/Caches/dsh-chatgpt-bridge-tests/reproA-eqfhAl'
+]
+fixture   = /private/tmp/dsh-repro-Q6fSGj/outside-fixture.txt (HOME? false )
+
+[A] read /private fixture => {"exit":1,"out":""}
+[A2] read /private/etc/passwd => {"exit":0,"out":"##\n# User Database\n# \n# Note t"}
+
+[B] tail page with 2000-byte last line => {"lines":1,"contentLen":2000,"truncation":"none","complete":true,"bytes":2403,"size":2403}
+[B2] max_bytes=100 => returned content bytes = 94 (should be <= 100)

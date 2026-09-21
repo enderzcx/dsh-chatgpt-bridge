@@ -1,0 +1,13 @@
+
+> dsh-chatgpt-bridge@0.5.1 build
+> npm run build:server && npm run build:client
+
+
+> dsh-chatgpt-bridge@0.5.1 build:server
+> tsc -p tsconfig.json
+
+
+> dsh-chatgpt-bridge@0.5.1 build:client
+> node scripts/build-client.mjs
+
+built lib/client.js (38455 bytes) as module "dsh-chatgpt-bridge"

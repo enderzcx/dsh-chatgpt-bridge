@@ -60,9 +60,63 @@ export const ConfigSchema = z.object({
     secrets: 'deny',
     dangerFullAccess: 'ask',
   }),
+  /**
+   * Direct local operations (no agent / no model). Off unless roots are named.
+   * These values are the ONLY authorization for the direct surface: no MCP tool
+   * argument can add a root, enable writes, or enable command execution.
+   */
+  directOps: z.object({
+    /** Master switch. Closed unless true AND explicit roots are named. */
+    enabled: z.boolean().default(false),
+    /** Allow create/overwrite/edit inside roots listed in writableRoots. */
+    allowWrites: z.boolean().default(false),
+    /** Trusted read roots. Absolute paths; realpath is enforced. */
+    roots: z.array(z.string()).default([]),
+    /** Subset of roots that accept writes. Absolute paths. */
+    writableRoots: z.array(z.string()).default([]),
+    /** Trusted JSON policy file, re-readable at runtime by dsh_operator_reload_policy. */
+    policyFile: z.string().default(''),
+    /** Extra denied path segments on top of the built-in credential denylist. */
+    deniedNames: z.array(z.string()).default([]),
+    limits: z.object({
+      readMaxBytes: z.number().default(DEFAULT_DIRECT_LIMITS.readMaxBytes),
+      readMaxLines: z.number().default(DEFAULT_DIRECT_LIMITS.readMaxLines),
+      readMaxWindowBytes: z.number().default(DEFAULT_DIRECT_LIMITS.readMaxWindowBytes),
+      writeMaxBytes: z.number().default(DEFAULT_DIRECT_LIMITS.writeMaxBytes),
+      execMaxOutputBytes: z.number().default(DEFAULT_DIRECT_LIMITS.execMaxOutputBytes),
+      execTimeoutMs: z.number().default(DEFAULT_DIRECT_LIMITS.execTimeoutMs),
+      execMaxTimeoutMs: z.number().default(DEFAULT_DIRECT_LIMITS.execMaxTimeoutMs),
+    }).default({ ...DEFAULT_DIRECT_LIMITS }),
+    exec: z.object({
+      /** High-privilege; a local administrator must turn this on deliberately. */
+      enabled: z.boolean().default(false),
+      /** Required when enabled: there is no "any command" mode. */
+      allowedCommands: z.array(z.string()).default([]),
+      /** Trusted roots a command cwd may use; defaults to the read roots. */
+      cwdRoots: z.array(z.string()).default([]),
+      /** Roots the child may write. Empty means the sandbox grants no writes. */
+      writableRoots: z.array(z.string()).default([]),
+      network: z.union([z.const('deny'), z.const('allow')]).default('deny'),
+      filesystem: z.union([z.const('roots'), z.const('inherit')]).default('roots'),
+      /** "required": refuse to run when no OS sandbox can enforce the boundary. */
+      sandbox: z.union([z.const('required'), z.const('preferred')]).default('required'),
+      envPassthrough: z.array(z.string()).default([...DEFAULT_EXEC_POLICY.envPassthrough]),
+      pathEntries: z.array(z.string()).default([]),
+    }).default({ ...DEFAULT_EXEC_POLICY }),
+  }).default({
+    enabled: false,
+    allowWrites: false,
+    roots: [],
+    writableRoots: [],
+    policyFile: '',
+    deniedNames: [],
+    limits: { ...DEFAULT_DIRECT_LIMITS },
+    exec: { ...DEFAULT_EXEC_POLICY },
+  }),
 });
 
 import type { UserApprovalPolicy } from './approval-policy.js';
+import { DEFAULT_DIRECT_LIMITS, DEFAULT_EXEC_POLICY, type DirectOpsConfigInput } from './direct/policy.js';
 
 /** Input shape accepted from the cordis row config (schema input side). */
 export interface BridgeConfigInput {
@@ -79,6 +133,7 @@ export interface BridgeConfigInput {
   sessionMaxChars?: number;
   logLevel?: LogLevel;
   approvalPolicy?: UserApprovalPolicy;
+  directOps?: DirectOpsConfigInput;
 }
 
 /** Fully resolved configuration after token resolution. */
@@ -96,6 +151,7 @@ export interface ResolvedBridgeConfig {
   logLevel: LogLevel;
   dshHome: string;
   approvalPolicy?: UserApprovalPolicy;
+  directOps?: DirectOpsConfigInput;
 }
 
 /** Convert URL authority host syntax to the bare form required by sockets. */
@@ -258,5 +314,6 @@ export function resolveConfig(
     logLevel: input.logLevel ?? 'info',
     dshHome,
     ...(input.approvalPolicy === undefined ? {} : { approvalPolicy: input.approvalPolicy }),
+    ...(input.directOps === undefined ? {} : { directOps: input.directOps }),
   };
 }

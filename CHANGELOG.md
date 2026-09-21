@@ -1,5 +1,158 @@
 # Changelog
 
+## 0.5.2 — 2026-09-21 · Web question ownership
+
+The bridge no longer steals `user-questions/request` from the DSH Web surface.
+While the Web gateway shares this process, the browser keeps its interactive
+composer and the bridge keeps a pending entry, so a supervised question can be
+answered from either side; the first answer wins. A Web-side failure (for
+example no browser attached) no longer settles the question, which stays parked
+for `dsh_answer_question`. Headless profiles are unchanged.
+
+### Fixed
+
+- Questions asked inside a bridge-managed session were only answerable through
+  `dsh_answer_question`: the prepended waterfall listener returned before the
+  Web gateway could forward the request, so the DSH Web UI showed the raw
+  `ask_user_question` tool row with no options to click.
+
+## 0.5.2 — 2026-09-21 · direct operations
+
+Adds an agent-free local surface on the same MCP endpoint and the same tunnel,
+alongside the existing 23 agent-control tools. Shipped together with the Web
+question-ownership fix in 0.5.2.
+
+### Added
+
+- **`dsh_read_text_file`** — bounded UTF-8 read with a line window, explicit
+  truncation reason (`byte_budget` / `line_range` / `file_larger_than_budget`,
+  plus `line_window_capped`), and a whole-file `file_version.sha256`.
+- **`dsh_write_text_file`** — create or replace, with `expected_sha256` conflict
+  detection, `mode: create` refusing existing files, and atomic
+  temp-file + fsync + rename writes.
+- **`dsh_edit_text_file`** — exact-text edit that refuses ambiguous matches
+  (`EDIT_AMBIGUOUS`) and missing text (`EDIT_NOT_FOUND`), with the same version
+  guard.
+- **`dsh_run_command`** — one allowlisted executable with an argv array and
+  `shell: false`; returns exit code, signal, stdout/stderr with byte counts and
+  truncation flags, process-group timeout kill, and the sandbox actually applied.
+  Disabled by default and requires an explicit allowlist.
+- **`dsh_operator_roots`** — read-only policy report (roots, switches, sandbox
+  kind, limits, and the boundaries that are *not* enforced).
+- **`dsh_operator_reload_policy`** — re-read the admin-owned policy file so
+  enabling exec or mounting a root does not require a DSH restart.
+- **`directOps` configuration** — trusted roots, separate read/write/exec
+  switches, limits, an optional runtime-reloadable policy file, and an OS-sandbox
+  policy (`network`, `filesystem`, `sandbox: required|preferred`).
+
+### Security notes
+
+- No tool argument can widen a root or enable a capability; authorization is
+  server-side configuration only (no `allowed_roots`, `approved`, or `force`).
+- Paths are realpath-canonicalized before containment, so symlinks, `..` and
+  macOS `/tmp` aliases cannot escape a root; credential-shaped segments and
+  filenames are refused for reads and writes.
+- `cwd` is explicitly **not** treated as a sandbox. Confinement is the macOS
+  `sandbox-exec` profile (`(deny network*)`, `(deny file-write*)` + allowed
+  subpaths), which the integration tests prove actually denies; with
+  `sandbox: required` an unavailable sandbox refuses the command instead of
+  downgrading silently. `sandbox-exec` is deprecated by Apple and is documented
+  as such.
+- Command execution defaults to off and needs both `exec.enabled` and a non-empty
+  `allowedCommands`; there is no "any command" mode.
+- The child process environment is rebuilt from an explicit passthrough list;
+  credential-shaped `env` overrides are refused and secret-shaped output is
+  redacted.
+
+### Fixed after source review
+
+Six confirmed defects from reviewing the first draft, each with a named
+regression test:
+
+1. A missing `roots` list fell back to `$HOME` and `enabled !== false` accepted
+   an empty config — the whole home directory could become readable. There is no
+   fallback now; `enabled` requires explicit `true` plus a non-empty root list,
+   and the schema default is `false`.
+2. The exec sandbox granted writes to `cwd` unconditionally and only denied
+   writes, so a command could still read anything on disk. `cwd` grants nothing,
+   `exec.writableRoots` is its own switch, and the profile confines reads
+   (denies reads outside the trusted roots and denies the policy file).
+3. Overwrite/edit required no version and `mode: create` was a check-then-rename
+   race. Overwrite and edit now require `expected_sha256`; create commits with an
+   atomic hard link so a racing file wins instead of being replaced.
+4. `new_text` was passed through `String.replace`, so `$&`/`$$` were expanded,
+   and editing dropped a UTF-8 BOM. Replacement is literal and the BOM round-trips.
+5. The read byte budget was applied before slicing, making later line ranges
+   unreachable, and the file hash could come from a different read than the
+   content. Reads now page (window grows with the requested range, bounded by
+   `readMaxWindowBytes`) and content, line numbers and hash come from one read.
+6. A path-lock waiter that timed out released the next waiter's gate, allowing
+   concurrent writers. The lock is now a FIFO queue with correct dequeue.
+
+### Fixed after second review round
+
+Three further confirmed defects, reproduced with synthetic fixtures before the
+fix and covered by `test/unit/direct-authorization.test.mjs`:
+
+- **Real read authorization.** The sandbox profile used `(allow default)` with
+  only a `$HOME` deny, so an allowlisted command could read `$TMPDIR` and any
+  other path outside the configured roots while the docs claimed read-roots
+  confinement. User-data trees are now denied for data reads and the configured
+  roots re-allowed afterwards; a bounded two-process test proves an unauthorized
+  `/private/tmp` fixture is refused while a root mounted there still works.
+- **Policy-file protection.** The policy file could be read or rewritten by the
+  direct file tools and by `exec`. It is now refused by every file tool and
+  denied inside the sandbox (read and write), together with its directory when it
+  sits inside a writable root. `exec.cwdRoots` entries are validated as existing
+  directories inside the trusted roots instead of being passed through.
+- **Usable, bounded paging.** The read path guessed its byte window at 16 bytes
+  per line, so a long-line file's tail was unreachable, and `max_bytes` bounded
+  the read rather than the response. Reads now read one bounded whole file from a
+  single descriptor, verify size/mtime/ctime/dev/ino before and after, refuse
+  files over `readMaxWindowBytes` with `FILE_TOO_LARGE`, honour `max_bytes` and
+  `readMaxLines` on the response, and report `line_too_long` instead of dropping
+  an over-budget line.
+- **Commit ordering.** The version check ran before the (slow) temp write, so a
+  change during that window was missed, and the post-write hash could read a
+  growing file to EOF and report content that was not this call's. Path and
+  version are now re-checked after the temp write immediately before the commit,
+  and hashing is bounded to the committed size. The residual check-to-commit race
+  is documented rather than claimed closed.
+
+### Fixed in the final pass
+
+- **Post-commit verification now compares against the content this call wrote.**
+  `commitContent` previously returned whatever the read-back produced, so a
+  same-length replacement landing after the commit was reported as this call's
+  success. It now hashes the payload before committing, verifies the read-back
+  hash equals it, verifies the file's identity (size/mtime/ctime/dev/ino) is
+  stable across that read, and re-resolves the path to confirm it still points at
+  the same canonical file. Any mismatch raises `POST_COMMIT_CONFLICT` with
+  `committed: true` and does not tell the caller to retry. A redirected path is
+  refused with `PATH_REDIRECTED` before anything is read back.
+- **`write` defaults to `mode: create`** in both the tool schema and the
+  implementation, so an omitted mode can no longer replace an existing file;
+  overwrite and edit still require `expected_sha256`.
+- **Permission bits are preserved exactly.** The temp-file `chmod` failure is no
+  longer swallowed, and `mode || 0o600` is gone, so a deliberate `000` is no
+  longer escalated to `0600`. A file the owner cannot read surfaces as a clean
+  `NOT_READABLE` refusal.
+- **Command execution is documented as a prototype on HOLD.** `filesystem: roots`
+  is a denylist of named user-data trees plus a write allow-list, not full path
+  isolation, and is no longer described as confining the child to the trusted
+  roots. The remaining gaps (bounded deny walk, un-enumerated trees, `input.cwd`
+  not restricted to `exec.cwdRoots`, nested read-only roots diverging between the
+  file handler and the OS profile) are listed in `docs/direct-operations.md`.
+  `exec` stays disabled by default.
+
+### Tests
+
+- 81 new tests across 6 files: 19 file/path, 15 exec, 17 authorization /
+  paging / commit verification, 15 defect regressions, 6 exec-isolation (real OS
+  sandbox), 9 real-MCP-protocol integration. 385 + 81 = 466 total.
+- Full suite: 466 tests, 464 pass, 0 fail, 2 skipped (baseline before this
+  change: 385 tests, 383 pass, 2 skipped).
+
 ## 0.5.1 — 2026-08-28
 
 Security and provenance patch for the v0.5 control plane, addressing all six

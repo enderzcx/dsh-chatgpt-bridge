@@ -13,7 +13,7 @@ export declare const Config: import("@deepseek-ai/schemastery").default<Schemast
     transport: import("@deepseek-ai/schemastery").default<"http" | "stdio", "http" | "stdio">;
     host: import("@deepseek-ai/schemastery").default<string, string>;
     port: import("@deepseek-ai/schemastery").default<number, number>;
-    authMode: import("@deepseek-ai/schemastery").default<"token" | "none", "token" | "none">;
+    authMode: import("@deepseek-ai/schemastery").default<"none" | "token", "none" | "token">;
     authToken: import("@deepseek-ai/schemastery").default<string, string>;
     authTokenEnv: import("@deepseek-ai/schemastery").default<string, string>;
     tokenFile: import("@deepseek-ai/schemastery").default<string, string>;
@@ -47,11 +47,102 @@ export declare const Config: import("@deepseek-ai/schemastery").default<Schemast
         secrets: import("@deepseek-ai/schemastery").default<"deny" | "ask", "deny" | "ask">;
         dangerFullAccess: import("@deepseek-ai/schemastery").default<"deny" | "ask", "deny" | "ask">;
     }>>;
+    directOps: import("@deepseek-ai/schemastery").default<Schemastery.ObjectS<{
+        enabled: import("@deepseek-ai/schemastery").default<boolean, boolean>;
+        allowWrites: import("@deepseek-ai/schemastery").default<boolean, boolean>;
+        roots: import("@deepseek-ai/schemastery").default<string[], string[]>;
+        writableRoots: import("@deepseek-ai/schemastery").default<string[], string[]>;
+        policyFile: import("@deepseek-ai/schemastery").default<string, string>;
+        deniedNames: import("@deepseek-ai/schemastery").default<string[], string[]>;
+        limits: import("@deepseek-ai/schemastery").default<Schemastery.ObjectS<{
+            readMaxBytes: import("@deepseek-ai/schemastery").default<number, number>;
+            readMaxLines: import("@deepseek-ai/schemastery").default<number, number>;
+            readMaxWindowBytes: import("@deepseek-ai/schemastery").default<number, number>;
+            writeMaxBytes: import("@deepseek-ai/schemastery").default<number, number>;
+            execMaxOutputBytes: import("@deepseek-ai/schemastery").default<number, number>;
+            execTimeoutMs: import("@deepseek-ai/schemastery").default<number, number>;
+            execMaxTimeoutMs: import("@deepseek-ai/schemastery").default<number, number>;
+        }>, Schemastery.ObjectT<{
+            readMaxBytes: import("@deepseek-ai/schemastery").default<number, number>;
+            readMaxLines: import("@deepseek-ai/schemastery").default<number, number>;
+            readMaxWindowBytes: import("@deepseek-ai/schemastery").default<number, number>;
+            writeMaxBytes: import("@deepseek-ai/schemastery").default<number, number>;
+            execMaxOutputBytes: import("@deepseek-ai/schemastery").default<number, number>;
+            execTimeoutMs: import("@deepseek-ai/schemastery").default<number, number>;
+            execMaxTimeoutMs: import("@deepseek-ai/schemastery").default<number, number>;
+        }>>;
+        exec: import("@deepseek-ai/schemastery").default<Schemastery.ObjectS<{
+            enabled: import("@deepseek-ai/schemastery").default<boolean, boolean>;
+            allowedCommands: import("@deepseek-ai/schemastery").default<string[], string[]>;
+            cwdRoots: import("@deepseek-ai/schemastery").default<string[], string[]>;
+            writableRoots: import("@deepseek-ai/schemastery").default<string[], string[]>;
+            network: import("@deepseek-ai/schemastery").default<"deny" | "allow", "deny" | "allow">;
+            filesystem: import("@deepseek-ai/schemastery").default<"roots" | "inherit", "roots" | "inherit">;
+            sandbox: import("@deepseek-ai/schemastery").default<"required" | "preferred", "required" | "preferred">;
+            envPassthrough: import("@deepseek-ai/schemastery").default<string[], string[]>;
+            pathEntries: import("@deepseek-ai/schemastery").default<string[], string[]>;
+        }>, Schemastery.ObjectT<{
+            enabled: import("@deepseek-ai/schemastery").default<boolean, boolean>;
+            allowedCommands: import("@deepseek-ai/schemastery").default<string[], string[]>;
+            cwdRoots: import("@deepseek-ai/schemastery").default<string[], string[]>;
+            writableRoots: import("@deepseek-ai/schemastery").default<string[], string[]>;
+            network: import("@deepseek-ai/schemastery").default<"deny" | "allow", "deny" | "allow">;
+            filesystem: import("@deepseek-ai/schemastery").default<"roots" | "inherit", "roots" | "inherit">;
+            sandbox: import("@deepseek-ai/schemastery").default<"required" | "preferred", "required" | "preferred">;
+            envPassthrough: import("@deepseek-ai/schemastery").default<string[], string[]>;
+            pathEntries: import("@deepseek-ai/schemastery").default<string[], string[]>;
+        }>>;
+    }>, Schemastery.ObjectT<{
+        enabled: import("@deepseek-ai/schemastery").default<boolean, boolean>;
+        allowWrites: import("@deepseek-ai/schemastery").default<boolean, boolean>;
+        roots: import("@deepseek-ai/schemastery").default<string[], string[]>;
+        writableRoots: import("@deepseek-ai/schemastery").default<string[], string[]>;
+        policyFile: import("@deepseek-ai/schemastery").default<string, string>;
+        deniedNames: import("@deepseek-ai/schemastery").default<string[], string[]>;
+        limits: import("@deepseek-ai/schemastery").default<Schemastery.ObjectS<{
+            readMaxBytes: import("@deepseek-ai/schemastery").default<number, number>;
+            readMaxLines: import("@deepseek-ai/schemastery").default<number, number>;
+            readMaxWindowBytes: import("@deepseek-ai/schemastery").default<number, number>;
+            writeMaxBytes: import("@deepseek-ai/schemastery").default<number, number>;
+            execMaxOutputBytes: import("@deepseek-ai/schemastery").default<number, number>;
+            execTimeoutMs: import("@deepseek-ai/schemastery").default<number, number>;
+            execMaxTimeoutMs: import("@deepseek-ai/schemastery").default<number, number>;
+        }>, Schemastery.ObjectT<{
+            readMaxBytes: import("@deepseek-ai/schemastery").default<number, number>;
+            readMaxLines: import("@deepseek-ai/schemastery").default<number, number>;
+            readMaxWindowBytes: import("@deepseek-ai/schemastery").default<number, number>;
+            writeMaxBytes: import("@deepseek-ai/schemastery").default<number, number>;
+            execMaxOutputBytes: import("@deepseek-ai/schemastery").default<number, number>;
+            execTimeoutMs: import("@deepseek-ai/schemastery").default<number, number>;
+            execMaxTimeoutMs: import("@deepseek-ai/schemastery").default<number, number>;
+        }>>;
+        exec: import("@deepseek-ai/schemastery").default<Schemastery.ObjectS<{
+            enabled: import("@deepseek-ai/schemastery").default<boolean, boolean>;
+            allowedCommands: import("@deepseek-ai/schemastery").default<string[], string[]>;
+            cwdRoots: import("@deepseek-ai/schemastery").default<string[], string[]>;
+            writableRoots: import("@deepseek-ai/schemastery").default<string[], string[]>;
+            network: import("@deepseek-ai/schemastery").default<"deny" | "allow", "deny" | "allow">;
+            filesystem: import("@deepseek-ai/schemastery").default<"roots" | "inherit", "roots" | "inherit">;
+            sandbox: import("@deepseek-ai/schemastery").default<"required" | "preferred", "required" | "preferred">;
+            envPassthrough: import("@deepseek-ai/schemastery").default<string[], string[]>;
+            pathEntries: import("@deepseek-ai/schemastery").default<string[], string[]>;
+        }>, Schemastery.ObjectT<{
+            enabled: import("@deepseek-ai/schemastery").default<boolean, boolean>;
+            allowedCommands: import("@deepseek-ai/schemastery").default<string[], string[]>;
+            cwdRoots: import("@deepseek-ai/schemastery").default<string[], string[]>;
+            writableRoots: import("@deepseek-ai/schemastery").default<string[], string[]>;
+            network: import("@deepseek-ai/schemastery").default<"deny" | "allow", "deny" | "allow">;
+            filesystem: import("@deepseek-ai/schemastery").default<"roots" | "inherit", "roots" | "inherit">;
+            sandbox: import("@deepseek-ai/schemastery").default<"required" | "preferred", "required" | "preferred">;
+            envPassthrough: import("@deepseek-ai/schemastery").default<string[], string[]>;
+            pathEntries: import("@deepseek-ai/schemastery").default<string[], string[]>;
+        }>>;
+    }>>;
 }>, Schemastery.ObjectT<{
     transport: import("@deepseek-ai/schemastery").default<"http" | "stdio", "http" | "stdio">;
     host: import("@deepseek-ai/schemastery").default<string, string>;
     port: import("@deepseek-ai/schemastery").default<number, number>;
-    authMode: import("@deepseek-ai/schemastery").default<"token" | "none", "token" | "none">;
+    authMode: import("@deepseek-ai/schemastery").default<"none" | "token", "none" | "token">;
     authToken: import("@deepseek-ai/schemastery").default<string, string>;
     authTokenEnv: import("@deepseek-ai/schemastery").default<string, string>;
     tokenFile: import("@deepseek-ai/schemastery").default<string, string>;
@@ -84,6 +175,97 @@ export declare const Config: import("@deepseek-ai/schemastery").default<Schemast
         githubRelease: import("@deepseek-ai/schemastery").default<"auto" | "ask", "auto" | "ask">;
         secrets: import("@deepseek-ai/schemastery").default<"deny" | "ask", "deny" | "ask">;
         dangerFullAccess: import("@deepseek-ai/schemastery").default<"deny" | "ask", "deny" | "ask">;
+    }>>;
+    directOps: import("@deepseek-ai/schemastery").default<Schemastery.ObjectS<{
+        enabled: import("@deepseek-ai/schemastery").default<boolean, boolean>;
+        allowWrites: import("@deepseek-ai/schemastery").default<boolean, boolean>;
+        roots: import("@deepseek-ai/schemastery").default<string[], string[]>;
+        writableRoots: import("@deepseek-ai/schemastery").default<string[], string[]>;
+        policyFile: import("@deepseek-ai/schemastery").default<string, string>;
+        deniedNames: import("@deepseek-ai/schemastery").default<string[], string[]>;
+        limits: import("@deepseek-ai/schemastery").default<Schemastery.ObjectS<{
+            readMaxBytes: import("@deepseek-ai/schemastery").default<number, number>;
+            readMaxLines: import("@deepseek-ai/schemastery").default<number, number>;
+            readMaxWindowBytes: import("@deepseek-ai/schemastery").default<number, number>;
+            writeMaxBytes: import("@deepseek-ai/schemastery").default<number, number>;
+            execMaxOutputBytes: import("@deepseek-ai/schemastery").default<number, number>;
+            execTimeoutMs: import("@deepseek-ai/schemastery").default<number, number>;
+            execMaxTimeoutMs: import("@deepseek-ai/schemastery").default<number, number>;
+        }>, Schemastery.ObjectT<{
+            readMaxBytes: import("@deepseek-ai/schemastery").default<number, number>;
+            readMaxLines: import("@deepseek-ai/schemastery").default<number, number>;
+            readMaxWindowBytes: import("@deepseek-ai/schemastery").default<number, number>;
+            writeMaxBytes: import("@deepseek-ai/schemastery").default<number, number>;
+            execMaxOutputBytes: import("@deepseek-ai/schemastery").default<number, number>;
+            execTimeoutMs: import("@deepseek-ai/schemastery").default<number, number>;
+            execMaxTimeoutMs: import("@deepseek-ai/schemastery").default<number, number>;
+        }>>;
+        exec: import("@deepseek-ai/schemastery").default<Schemastery.ObjectS<{
+            enabled: import("@deepseek-ai/schemastery").default<boolean, boolean>;
+            allowedCommands: import("@deepseek-ai/schemastery").default<string[], string[]>;
+            cwdRoots: import("@deepseek-ai/schemastery").default<string[], string[]>;
+            writableRoots: import("@deepseek-ai/schemastery").default<string[], string[]>;
+            network: import("@deepseek-ai/schemastery").default<"deny" | "allow", "deny" | "allow">;
+            filesystem: import("@deepseek-ai/schemastery").default<"roots" | "inherit", "roots" | "inherit">;
+            sandbox: import("@deepseek-ai/schemastery").default<"required" | "preferred", "required" | "preferred">;
+            envPassthrough: import("@deepseek-ai/schemastery").default<string[], string[]>;
+            pathEntries: import("@deepseek-ai/schemastery").default<string[], string[]>;
+        }>, Schemastery.ObjectT<{
+            enabled: import("@deepseek-ai/schemastery").default<boolean, boolean>;
+            allowedCommands: import("@deepseek-ai/schemastery").default<string[], string[]>;
+            cwdRoots: import("@deepseek-ai/schemastery").default<string[], string[]>;
+            writableRoots: import("@deepseek-ai/schemastery").default<string[], string[]>;
+            network: import("@deepseek-ai/schemastery").default<"deny" | "allow", "deny" | "allow">;
+            filesystem: import("@deepseek-ai/schemastery").default<"roots" | "inherit", "roots" | "inherit">;
+            sandbox: import("@deepseek-ai/schemastery").default<"required" | "preferred", "required" | "preferred">;
+            envPassthrough: import("@deepseek-ai/schemastery").default<string[], string[]>;
+            pathEntries: import("@deepseek-ai/schemastery").default<string[], string[]>;
+        }>>;
+    }>, Schemastery.ObjectT<{
+        enabled: import("@deepseek-ai/schemastery").default<boolean, boolean>;
+        allowWrites: import("@deepseek-ai/schemastery").default<boolean, boolean>;
+        roots: import("@deepseek-ai/schemastery").default<string[], string[]>;
+        writableRoots: import("@deepseek-ai/schemastery").default<string[], string[]>;
+        policyFile: import("@deepseek-ai/schemastery").default<string, string>;
+        deniedNames: import("@deepseek-ai/schemastery").default<string[], string[]>;
+        limits: import("@deepseek-ai/schemastery").default<Schemastery.ObjectS<{
+            readMaxBytes: import("@deepseek-ai/schemastery").default<number, number>;
+            readMaxLines: import("@deepseek-ai/schemastery").default<number, number>;
+            readMaxWindowBytes: import("@deepseek-ai/schemastery").default<number, number>;
+            writeMaxBytes: import("@deepseek-ai/schemastery").default<number, number>;
+            execMaxOutputBytes: import("@deepseek-ai/schemastery").default<number, number>;
+            execTimeoutMs: import("@deepseek-ai/schemastery").default<number, number>;
+            execMaxTimeoutMs: import("@deepseek-ai/schemastery").default<number, number>;
+        }>, Schemastery.ObjectT<{
+            readMaxBytes: import("@deepseek-ai/schemastery").default<number, number>;
+            readMaxLines: import("@deepseek-ai/schemastery").default<number, number>;
+            readMaxWindowBytes: import("@deepseek-ai/schemastery").default<number, number>;
+            writeMaxBytes: import("@deepseek-ai/schemastery").default<number, number>;
+            execMaxOutputBytes: import("@deepseek-ai/schemastery").default<number, number>;
+            execTimeoutMs: import("@deepseek-ai/schemastery").default<number, number>;
+            execMaxTimeoutMs: import("@deepseek-ai/schemastery").default<number, number>;
+        }>>;
+        exec: import("@deepseek-ai/schemastery").default<Schemastery.ObjectS<{
+            enabled: import("@deepseek-ai/schemastery").default<boolean, boolean>;
+            allowedCommands: import("@deepseek-ai/schemastery").default<string[], string[]>;
+            cwdRoots: import("@deepseek-ai/schemastery").default<string[], string[]>;
+            writableRoots: import("@deepseek-ai/schemastery").default<string[], string[]>;
+            network: import("@deepseek-ai/schemastery").default<"deny" | "allow", "deny" | "allow">;
+            filesystem: import("@deepseek-ai/schemastery").default<"roots" | "inherit", "roots" | "inherit">;
+            sandbox: import("@deepseek-ai/schemastery").default<"required" | "preferred", "required" | "preferred">;
+            envPassthrough: import("@deepseek-ai/schemastery").default<string[], string[]>;
+            pathEntries: import("@deepseek-ai/schemastery").default<string[], string[]>;
+        }>, Schemastery.ObjectT<{
+            enabled: import("@deepseek-ai/schemastery").default<boolean, boolean>;
+            allowedCommands: import("@deepseek-ai/schemastery").default<string[], string[]>;
+            cwdRoots: import("@deepseek-ai/schemastery").default<string[], string[]>;
+            writableRoots: import("@deepseek-ai/schemastery").default<string[], string[]>;
+            network: import("@deepseek-ai/schemastery").default<"deny" | "allow", "deny" | "allow">;
+            filesystem: import("@deepseek-ai/schemastery").default<"roots" | "inherit", "roots" | "inherit">;
+            sandbox: import("@deepseek-ai/schemastery").default<"required" | "preferred", "required" | "preferred">;
+            envPassthrough: import("@deepseek-ai/schemastery").default<string[], string[]>;
+            pathEntries: import("@deepseek-ai/schemastery").default<string[], string[]>;
+        }>>;
     }>>;
 }>>;
 export declare function apply(ctx: Context, config: BridgeConfigInput): void;
