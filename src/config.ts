@@ -90,7 +90,10 @@ export const ConfigSchema = z.object({
     exec: z.object({
       /** High-privilege; a local administrator must turn this on deliberately. */
       enabled: z.boolean().default(false),
-      /** Required when enabled: there is no "any command" mode. */
+      /**
+       * Required when enabled UNLESS `fullAccess` is true. There is no implicit
+       * "any command" mode: a restricted policy always needs a name allowlist.
+       */
       allowedCommands: z.array(z.string()).default([]),
       /** Trusted roots a command cwd may use; defaults to the read roots. */
       cwdRoots: z.array(z.string()).default([]),
@@ -101,7 +104,36 @@ export const ConfigSchema = z.object({
       /** "required": refuse to run when no OS sandbox can enforce the boundary. */
       sandbox: z.union([z.const('required'), z.const('preferred')]).default('required'),
       envPassthrough: z.array(z.string()).default([...DEFAULT_EXEC_POLICY.envPassthrough]),
+      /**
+       * Extra PATH entries used to RESOLVE an allowlisted name. Needed on hosts
+       * whose service PATH lacks the install prefix (for example
+       * `/opt/homebrew/bin` for a Homebrew `node`).
+       */
       pathEntries: z.array(z.string()).default([]),
+      /**
+       * Administrator-only full access. When true the child runs with NO OS
+       * sandbox: any bare executable name resolves, any existing directory may be
+       * the cwd, and reads, writes, temp directories and the network are
+       * unconfined (codex `dangerFullAccess`). Default false, requires the
+       * `codex-app-server` backend, and can ONLY be set by this trusted
+       * configuration — no tool argument can reach it.
+       */
+      fullAccess: z.boolean().default(false),
+      /**
+       * Absolute path to the codex executable for the app-server backend. Empty
+       * means unset; the bridge never guesses it from PATH.
+       */
+      codexBin: z.string().default(''),
+      /** Extra argv for the app-server child, e.g. `-c key=value`. */
+      codexArgs: z.array(z.string()).default([]),
+      /**
+       * Isolated CODEX_HOME for the app-server child, so it does not read the
+       * user's global ~/.codex configuration.
+       */
+      codexHome: z.string().default(''),
+      backend: z.union([z.const('sandbox-exec'), z.const('codex-app-server')]).default('sandbox-exec'),
+      asyncMaxRuns: z.number().min(1).default(4),
+      asyncMaxOutputBytes: z.number().min(1024).default(262144),
     }).default({ ...DEFAULT_EXEC_POLICY }),
   }).default({
     enabled: false,

@@ -6,7 +6,7 @@
  *   2. Error text and log payloads are scrubbed of token-shaped substrings, so a
  *      refusal never becomes an oracle for the secret it protected.
  */
-import { DirectOpsError } from './types.js';
+import { DirectOpsError, type DirectOpsPolicy } from './types.js';
 
 /**
  * Path segments that are credential stores on this platform. Matching is on the
@@ -91,3 +91,34 @@ export function assertNotCredentialFile(canonicalPath: string, deniedBasenames: 
 }
 
 export { basenameOf as directBasenameOf };
+
+/**
+ * Environment for a codex app-server child.
+ *
+ * Rebuilt from the policy's explicit passthrough list, never inherited: a
+ * provider key, bridge token, or unrelated export in the bridge's own
+ * environment must not reach a child that the cloud client can drive. `PATH` is
+ * present because the server needs it to resolve the executable and to run its
+ * own helpers.
+ */
+export function buildCodexEnv(policy: DirectOpsPolicy): Record<string, string> {
+  const env: Record<string, string> = {};
+  for (const key of policy.exec.envPassthrough) {
+    const value = process.env[key];
+    if (value !== undefined) env[key] = value;
+  }
+  if (policy.exec.pathEntries.length > 0) {
+    const current = env.PATH ?? '';
+    env.PATH = [current, ...policy.exec.pathEntries].filter((part) => part !== '').join(':');
+  }
+  // Codex needs a HOME to find its own configuration directory; without it the
+  // server refuses to start. It is read, never written, by this backend.
+  if (env.HOME === undefined && process.env.HOME !== undefined) env.HOME = process.env.HOME;
+  // Point the child at a bridge-owned codex home so it does not read the user's
+  // ~/.codex/config.toml. Measured: without this the child reported
+  // codexHome=<user home>/.codex, i.e. the user's global config was in effect.
+  if (policy.exec.codexHome !== undefined && policy.exec.codexHome !== '') {
+    env.CODEX_HOME = policy.exec.codexHome;
+  }
+  return env;
+}

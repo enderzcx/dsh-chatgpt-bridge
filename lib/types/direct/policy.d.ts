@@ -19,6 +19,20 @@ export interface DirectOpsConfigInput {
         sandbox?: 'required' | 'preferred';
         envPassthrough?: string[];
         pathEntries?: string[];
+        /** Local execution backend; see {@link DirectOpsExecPolicy.backend}. */
+        backend?: 'sandbox-exec' | 'codex-app-server';
+        /** Absolute path to the codex executable for the app-server backend. */
+        codexBin?: string;
+        codexArgs?: string[];
+        /** Isolated CODEX_HOME for the app-server child; see DirectOpsExecPolicy. */
+        codexHome?: string;
+        /**
+         * Administrator-only full access; see {@link DirectOpsExecPolicy.fullAccess}.
+         * Defaults to false, and only this trusted config can enable it.
+         */
+        fullAccess?: boolean;
+        asyncMaxOutputBytes?: number;
+        asyncMaxRuns?: number;
     };
 }
 export declare const DEFAULT_DIRECT_LIMITS: DirectOpsLimits;

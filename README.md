@@ -10,18 +10,20 @@
 
 **The bridge connects the two sides. It does not replace DSH, modify DSH core, or route DSH model traffic through ChatGPT.**
 
-Current package: **v0.5.2**, targeting DeepSeek Harness **0.1.5-rc.2**. After a successful connection, ChatGPT should see **tool count = 23** (29 when direct operations are configured — see below).
+Current package: **v0.6.6**, targeting DeepSeek Harness **0.1.5-rc.2**. After a successful connection, ChatGPT should see **tool count = 27** (36 when direct operations are configured — see below).
 
 ## Two ways to work
 
 The bridge exposes both on the same endpoint and the same tunnel:
 
-1. **Delegation (default, 23 tools).** ChatGPT creates a DSH session or Goal and
+1. **Delegation (default, 27 tools).** ChatGPT creates a DSH session or Goal and
    DSH runs an agent. Use this for engineering work: it keeps DSH's sandbox,
    approvals, skills, subagents and workspace rules.
-2. **Direct operations (6 optional tools).** `dsh_read_text_file`,
+2. **Direct operations (9 optional tools).** `dsh_read_text_file`,
    `dsh_write_text_file`, `dsh_edit_text_file`, `dsh_run_command`,
-   `dsh_operator_roots`, `dsh_operator_reload_policy` run locally in the bridge
+   `dsh_operator_roots`, `dsh_operator_reload_policy`, and the async
+   `dsh_start_command` / `dsh_read_command_output` / `dsh_terminate_command`
+   run locally in the bridge
    process with **no agent session and no model turn** — for small reads, small
    edits and bounded checks that should not cost a session.
 
@@ -158,8 +160,8 @@ After connecting, refresh/rescan the MCP tools in ChatGPT and run a read-only ch
 A healthy first check should look like:
 
 ```text
-bridge version = 0.5.2
-tool count = 23
+bridge version = 0.6.6
+tool count = 27
 ```
 
 If health is OK, the version matches, and your registered workspace appears, the control path is ready.
@@ -270,10 +272,10 @@ This is an actively maintained, independent DSH plugin. Compatibility releases t
 Current package:
 
 ```text
-dsh-chatgpt-bridge@0.5.2
+dsh-chatgpt-bridge@0.6.6
 ```
 
-Compatibility: **v0.5.2 → DSH 0.1.5-rc.2**. Fresh real ChatGPT UI validation after each DSH upgrade still needs to be rechecked on your machine.
+Compatibility: **v0.6.6 → DSH 0.1.5-rc.2**. Fresh real ChatGPT UI validation after each DSH upgrade still needs to be rechecked on your machine.
 
 Distribution and ecosystem listings:
 

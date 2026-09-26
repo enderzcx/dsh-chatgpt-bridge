@@ -44,6 +44,20 @@ export interface DirectOpsConfigInput {
     sandbox?: 'required' | 'preferred';
     envPassthrough?: string[];
     pathEntries?: string[];
+    /** Local execution backend; see {@link DirectOpsExecPolicy.backend}. */
+    backend?: 'sandbox-exec' | 'codex-app-server';
+    /** Absolute path to the codex executable for the app-server backend. */
+    codexBin?: string;
+    codexArgs?: string[];
+    /** Isolated CODEX_HOME for the app-server child; see DirectOpsExecPolicy. */
+    codexHome?: string;
+    /**
+     * Administrator-only full access; see {@link DirectOpsExecPolicy.fullAccess}.
+     * Defaults to false, and only this trusted config can enable it.
+     */
+    fullAccess?: boolean;
+    asyncMaxOutputBytes?: number;
+    asyncMaxRuns?: number;
   };
 }
 
@@ -69,6 +83,15 @@ export const DEFAULT_EXEC_POLICY: DirectOpsExecPolicy = {
   sandbox: 'required',
   envPassthrough: ['PATH', 'HOME', 'SHELL', 'USER', 'LOGNAME', 'LANG', 'LC_ALL', 'TMPDIR', 'TERM'],
   pathEntries: [],
+  backend: 'sandbox-exec',
+  fullAccess: false,
+  // Empty string means unset. This mirrors the public schema, which cannot carry
+  // `undefined` through its defaults, and the resolution code treats both the same.
+  codexBin: '',
+  codexHome: '',
+  codexArgs: [],
+  asyncMaxOutputBytes: 262144,
+  asyncMaxRuns: 4,
 };
 
 const SANDBOX_EXEC = '/usr/bin/sandbox-exec';
@@ -97,6 +120,33 @@ export function sandboxExecAvailable(now = Date.now()): boolean {
 export function sandboxKind(): string {
   if (!SANDBOX_APPLICABLE) return 'none';
   return sandboxExecAvailable() ? 'macos-sandbox-exec' : 'none';
+}
+
+/**
+ * Validate the administrator-only full-access switch.
+ *
+ * Only a literal `true` enables it; anything else (including a string) is a
+ * configuration error rather than a silent coercion.
+ */
+function fullAccessOf(value: unknown): boolean {
+  if (value === undefined) return DEFAULT_EXEC_POLICY.fullAccess;
+  if (value === true || value === false) return value;
+  throw new DirectOpsError(
+    'INVALID_ARGUMENT',
+    'exec.fullAccess must be a boolean; it is an administrator-only switch and is never inferred from a string',
+    { fullAccess: value },
+  );
+}
+
+/** Validate the configured exec backend, defaulting to the local sandbox plan. */
+function execBackend(value: unknown): 'sandbox-exec' | 'codex-app-server' {
+  if (value === undefined) return DEFAULT_EXEC_POLICY.backend;
+  if (value === 'sandbox-exec' || value === 'codex-app-server') return value;
+  throw new DirectOpsError(
+    'INVALID_ARGUMENT',
+    'exec.backend must be "sandbox-exec" or "codex-app-server"',
+    { backend: value },
+  );
 }
 
 function realpathOrSelf(path: string): string {
@@ -243,10 +293,32 @@ export function resolveDirectOpsPolicy(row: DirectOpsConfigInput, explicitFileCo
   const allowedCommands = assertNonEmptyStringArray(execInput.allowedCommands, 'exec.allowedCommands');
   const envPassthrough = assertNonEmptyStringArray(execInput.envPassthrough, 'exec.envPassthrough');
   const execEnabled = execInput.enabled === true;
-  if (execEnabled && allowedCommands.length === 0) {
+  const fullAccess = fullAccessOf(execInput.fullAccess);
+  const backend = execBackend(execInput.backend);
+  if (execEnabled && allowedCommands.length === 0 && !fullAccess) {
     throw new DirectOpsError(
       'INVALID_ARGUMENT',
-      'exec.enabled requires a non-empty exec.allowedCommands allowlist; there is no "any command" mode',
+      'exec.enabled requires a non-empty exec.allowedCommands allowlist; there is no "any command" mode. '
+        + 'Administrator full access (exec.fullAccess=true) is the only way to run arbitrary executable names.',
+    );
+  }
+  if (fullAccess && backend !== 'codex-app-server') {
+    // The local sandbox-exec plan always writes a confinement profile, so it
+    // cannot honestly deliver full access. Refusing beats running it with the
+    // allowlist and cwd lifted while still calling itself sandboxed.
+    throw new DirectOpsError(
+      'INVALID_ARGUMENT',
+      'exec.fullAccess=true requires exec.backend="codex-app-server": the local sandbox-exec backend always writes '
+        + 'a confinement profile, so it cannot provide unconfined execution. Set the codex backend, or leave '
+        + 'full access off.',
+      { backend, fullAccess: true },
+    );
+  }
+  if (fullAccess && !execEnabled) {
+    throw new DirectOpsError(
+      'INVALID_ARGUMENT',
+      'exec.fullAccess=true has no effect while exec.enabled is false; enable exec or clear full access',
+      { fullAccess: true },
     );
   }
 
@@ -290,7 +362,12 @@ export function resolveDirectOpsPolicy(row: DirectOpsConfigInput, explicitFileCo
   // exec.cwdRoots must be real directories inside the trusted roots. A raw string
   // list was previously passed straight through, so an unwritable cwd could be
   // configured and silently used.
-  const requestedCwdRoots = cwdRoots.length > 0 ? cwdRoots.map((item) => resolve(item)) : readLabels;
+  // Default to the WRITABLE labels, which is the historical behaviour. Defaulting
+  // to every read root would silently widen where commands may run for every
+  // existing configuration that never set exec.cwdRoots.
+  const requestedCwdRoots = cwdRoots.length > 0
+    ? cwdRoots.map((item) => resolve(item))
+    : (writableLabels.length > 0 ? writableLabels : readLabels);
   const validatedCwdRoots: string[] = [];
   for (const candidate of requestedCwdRoots) {
     const match = roots.find((root) => candidate === root.real || candidate.startsWith(`${root.real}/`));
@@ -323,6 +400,19 @@ export function resolveDirectOpsPolicy(row: DirectOpsConfigInput, explicitFileCo
       sandbox: execInput.sandbox ?? DEFAULT_EXEC_POLICY.sandbox,
       envPassthrough: envPassthrough.length > 0 ? envPassthrough : DEFAULT_EXEC_POLICY.envPassthrough,
       pathEntries: assertNonEmptyStringArray(execInput.pathEntries, 'exec.pathEntries'),
+      backend,
+      codexBin: execInput.codexBin === undefined || execInput.codexBin === '' ? '' : resolve(execInput.codexBin),
+      codexArgs: assertNonEmptyStringArray(execInput.codexArgs, 'exec.codexArgs'),
+      codexHome: execInput.codexHome === undefined || execInput.codexHome === '' ? '' : resolve(execInput.codexHome),
+      asyncMaxOutputBytes: positiveInt(
+        merged.limits?.execMaxOutputBytes ?? undefined,
+        'limits.execMaxOutputBytes',
+        DEFAULT_EXEC_POLICY.asyncMaxOutputBytes,
+      ),
+      asyncMaxRuns: positiveInt(execInput.asyncMaxRuns, 'exec.asyncMaxRuns', DEFAULT_EXEC_POLICY.asyncMaxRuns),
+      // Trusted configuration only; a truthy non-boolean is rejected rather than
+      // coerced, so a caller-supplied string can never switch this on.
+      fullAccess,
     },
     policyReloadable: row.policyFile !== undefined && row.policyFile !== '',
     ...(row.policyFile === undefined || row.policyFile === '' ? {} : { policyFile: resolve(row.policyFile) }),
@@ -346,7 +436,10 @@ export function resolveAllowedCommand(
     throw new DirectOpsError('INVALID_ARGUMENT', 'cmd must be a bare executable name, not a path');
   }
   const allowed = policy.exec.allowedCommands;
-  if (!allowed.includes(cmd)) {
+  // In administrator full-access mode the name allowlist is bypassed, so any
+  // bare executable name resolves on PATH. The bare-name rule above still holds:
+  // a caller still cannot hand over a path or an argv of its own choosing.
+  if (!policy.exec.fullAccess && !allowed.includes(cmd)) {
     throw new DirectOpsError('COMMAND_NOT_ALLOWED', 'command is not in the server-side allowlist', {
       cmd,
       allowed_commands: allowed,

@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 /**
- * Real MCP dogfood for the v0.5.2 Control Plane Reliability security patch.
+ * Real MCP dogfood for the v0.6.6 Control Plane Reliability security patch.
  *
  * Dogfood A — minimal 35-second Goal (no workspace scan, no file writes).
  * Dogfood B — mock release DAG: block one branch, defer it, finish the
@@ -70,7 +70,7 @@ console.log('target:', BASE);
 const transport = new StreamableHTTPClientTransport(new URL(BASE), {
   requestInit: readToken() ? { headers: { Authorization: `Bearer ${readToken()}` } } : {},
 });
-const client = new Client({ name: 'dsh-chatgpt-bridge-goal-dogfood', version: '0.5.2' });
+const client = new Client({ name: 'dsh-chatgpt-bridge-goal-dogfood', version: '0.6.6' });
 
 try {
   await client.connect(transport);

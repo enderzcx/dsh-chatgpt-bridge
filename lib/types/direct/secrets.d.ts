@@ -1,4 +1,13 @@
 /**
+ * Direct-surface secret hygiene.
+ *
+ * Two rules, both enforced here so every file/exec path shares one implementation:
+ *   1. Credential-shaped paths are refused before any read/write happens.
+ *   2. Error text and log payloads are scrubbed of token-shaped substrings, so a
+ *      refusal never becomes an oracle for the secret it protected.
+ */
+import { type DirectOpsPolicy } from './types.js';
+/**
  * Path segments that are credential stores on this platform. Matching is on the
  * lowercased segment, so `~/.ssh` and `~/.SSH` are both refused. This is a
  * defence-in-depth denylist for obvious credential stores; the primary boundary
@@ -17,3 +26,13 @@ declare function basenameOf(path: string): string;
  */
 export declare function assertNotCredentialFile(canonicalPath: string, deniedBasenames: RegExp[]): void;
 export { basenameOf as directBasenameOf };
+/**
+ * Environment for a codex app-server child.
+ *
+ * Rebuilt from the policy's explicit passthrough list, never inherited: a
+ * provider key, bridge token, or unrelated export in the bridge's own
+ * environment must not reach a child that the cloud client can drive. `PATH` is
+ * present because the server needs it to resolve the executable and to run its
+ * own helpers.
+ */
+export declare function buildCodexEnv(policy: DirectOpsPolicy): Record<string, string>;

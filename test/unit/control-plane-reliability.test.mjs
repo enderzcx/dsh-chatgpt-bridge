@@ -26,12 +26,26 @@ function makeLiveAgent(id, workspacePath, extras = {}) {
       snapshotEvents: () => events,
       requestHeader: () => undefined,
     },
-    followup(message) {
-      agent.followupCount += 1;
+    /** DSH's one delivery primitive; `followup`/`steer` route through it. */
+    send(message, target = 'next-turn', wakeup = true) {
+      agent.sendCount = (agent.sendCount ?? 0) + 1;
+      agent.lastSend = { message, target, wakeup };
+      if (target === 'next-step') {
+        agent.steerCount = (agent.steerCount ?? 0) + 1;
+      } else {
+        agent.followupCount += 1;
+      }
       agent.status = extras.followupStatus ?? 'running';
       inbox.hasPending = true;
       inbox.nextTurn = inbox.nextTurn ?? [];
-      inbox.nextTurn.push(message ?? { id: 'm' });
+      inbox.nextStep = inbox.nextStep ?? [];
+      (target === 'next-step' ? inbox.nextStep : inbox.nextTurn).push(message ?? { id: 'm' });
+    },
+    followup(message) {
+      agent.send(message, 'next-turn', true);
+    },
+    steer(message) {
+      agent.send(message, 'next-step', true);
     },
     cancel() {
       agent.cancelCount += 1;
@@ -366,7 +380,16 @@ test('A11: a real approved publish records evidence independently from mutation 
   );
 
   agent.session.events.push(toolResult(2, 'c-pub-approved', 'dsh-chatgpt-bridge@0.5.0 published'));
-  await bridge.getTaskStatus(started.session_id);
+  // A status read is annotated read-only and must not record evidence, so the
+  // evidence is recorded by the goal-driving path instead.
+  const cleanStatus = await bridge.getTaskStatus(started.session_id);
+  assert.equal(
+    bridge.idempotencyManager.listEvidence().filter((item) => item.kind === 'npm_publish').length,
+    0,
+    'a read-only status call must not record execution evidence',
+  );
+  assert.ok(cleanStatus.session_id === started.session_id);
+  await bridge.waitGoal(started.session_id, 1);
   assert.equal(bridge.idempotencyManager.listEvidence().filter((item) => item.kind === 'npm_publish').length, 1);
 
   agent.session.events.push(toolCall(3, 'c-pub-replay', 'npm publish'));
@@ -418,7 +441,8 @@ test('A10: dsh_rerun_step invalidates the resolved test kind and permits a fresh
     toolCall(1, 'c-test-first', 'npm test'),
     toolResult(2, 'c-test-first', '✔ pass 203\nℹ tests 203\nℹ fail 0'),
   );
-  await bridge.getTaskStatus(started.session_id);
+  // Evidence is recorded by the goal-driving path, not by a read-only status call.
+  await bridge.waitGoal(started.session_id, 1);
   assert.equal(bridge.idempotencyManager.listEvidence().filter((item) => item.kind === 'test').length, 1);
 
   await bridge.rerunStep(started.session_id, 'npm_test', 'rerun-test-once');

@@ -19,6 +19,7 @@ import { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import { z } from 'zod';
 import { editTextFile, readTextFile, writeTextFile } from './files.js';
 import { runCommand } from './exec.js';
+import { readRun, startCommand, terminateRun } from './async-exec.js';
 import {
   execFileVersion,
   resolveDirectOpsPolicy,
@@ -26,6 +27,7 @@ import {
   type DirectOpsConfigInput,
 } from './policy.js';
 import { scrubSecrets } from './secrets.js';
+import { callDiagnostics } from '../diagnostics.js';
 import {
   DirectOpsError,
   type DirectOpsPolicy,
@@ -52,11 +54,36 @@ export function createDirectOpsRuntime(rowConfig: DirectOpsConfigInput): DirectO
   };
 }
 
+/**
+ * The diagnostics block this read-only tool reports.
+ *
+ * Everything here is already allowlisted at write time, so it cannot carry
+ * caller data, paths, arguments or error text. It is deliberately a bounded
+ * snapshot: the ring is in memory and a restart starts a new window.
+ */
+function diagnosticsView(): DirectOpsPolicyView['diagnostics'] {
+  const snapshot = callDiagnostics.snapshot(40);
+  return {
+    coverage: { ...snapshot.coverage },
+    ...(snapshot.tool_surface === undefined ? {} : { tool_surface: { ...snapshot.tool_surface } }),
+    recent: snapshot.records.map((record) => ({ ...record })),
+  };
+}
+
 export function describePolicy(policy: DirectOpsPolicy, runtime: DirectOpsRuntime): DirectOpsPolicyView {
   const notes: string[] = [];
   if (!policy.exec.enabled) {
     notes.push(
       'command execution is OFF: it is a high-privilege capability a local administrator must enable explicitly',
+    );
+  } else if (policy.exec.fullAccess) {
+    // Conditional from the start: this note must never claim a trusted-root
+    // boundary at the same time as the full-access block says there is none.
+    notes.push(
+      'command execution is ON in administrator full-access mode: the child runs with the same OS user as DSH and '
+        + 'NONE of the usual command limits apply — no command allowlist (any bare executable name resolves on '
+        + 'PATH), no cwd-root confinement, no write-root confinement, no $TMPDIR or /tmp exclusion, and no network '
+        + 'denial. It is not "sandboxed with wider roots"; there is no OS sandbox in force.',
     );
   } else {
     notes.push(
@@ -67,15 +94,94 @@ export function describePolicy(policy: DirectOpsPolicy, runtime: DirectOpsRuntim
   }
   if (!policy.writesEnabled) notes.push('direct writes are OFF: no trusted root is configured as writable');
   notes.push('roots are server-side configuration; no tool argument can add, widen or approve a root');
+
+  // The command sandbox is reported from the backend that would actually run the
+  // command. The codex backend confines with codex's own OS sandbox, so its
+  // availability comes from having a configured executable — not from the
+  // Seatbelt binary the other backend uses.
+  const backend = policy.exec.backend;
+  const codexConfigured = policy.exec.codexBin !== undefined && policy.exec.codexBin !== '';
+  const full = policy.exec.fullAccess;
+
+  if (backend === 'codex-app-server') {
+    if (full) {
+      // Say what is TRUE, not what is configured. The configured network/filesystem
+      // values are not in force and are reported as separate fields below.
+      notes.push(
+        'ADMINISTRATOR FULL ACCESS IS ON: commands run with NO OS sandbox. The child may run any bare executable '
+          + 'name, use any existing directory as its cwd, read and write anywhere the login user can, write to '
+          + '$TMPDIR and /tmp, and use the network. codex is given dangerFullAccess.',
+      );
+      notes.push(
+        'the configured network/filesystem values are NOT in force in this mode; they are reported as '
+          + 'configured_* fields so they cannot be mistaken for the effective boundary',
+      );
+      notes.push('full access is selected only by trusted server-side configuration; no tool argument can enable it');
+      notes.push('command results report applied=false, network=unconfined and filesystem=unconfined in this mode');
+    } else {
+      notes.push(
+        codexConfigured
+          ? 'commands run through a local codex app-server, which applies its own OS sandbox; no thread, turn or '
+            + 'model call is created'
+          : 'exec.backend is codex-app-server but exec.codexBin is unset: commands will be refused, not run unsandboxed',
+      );
+      if (policy.exec.enabled) {
+        notes.push(
+          policy.exec.writableRoots.length === 0
+            ? 'command writes are OFF: exec.writableRoots is empty, so codex is given a readOnly policy'
+            : 'command writes are limited to exec.writableRoots, which is a separate list from the file tools\' roots',
+        );
+        if (policy.exec.filesystem === 'roots') {
+          notes.push(
+            'codex readOnly/workspaceWrite permit host-wide READS; the trusted roots do NOT confine command reads, '
+              + 'so do not read the file-tool root confinement as inherited here',
+          );
+        }
+      }
+      if (policy.exec.filesystem === 'inherit') {
+        notes.push('exec.filesystem=inherit is refused by the codex backend rather than widened to full access');
+      }
+    }
+  }
+  if (backend === 'sandbox-exec' && full) {
+    // Refused at resolution time, so this is unreachable in practice; kept so the
+    // note set can never imply the mode took effect if the check is ever removed.
+    notes.push('exec.fullAccess is not supported by the sandbox-exec backend and is refused at startup');
+  }
+
+  // Effective fields, consistent with the notes above.
+  const effectiveNetwork = full ? 'unconfined' : policy.exec.network;
+  const effectiveFilesystem = full ? 'unconfined' : policy.exec.filesystem;
+  const sandboxKindValue = backend === 'codex-app-server'
+    ? (full ? 'none' : (codexConfigured ? 'codex-app-server' : 'none'))
+    : sandboxKind();
+
   return {
     enabled: policy.enabled,
     writes_enabled: policy.writesEnabled,
     exec_enabled: policy.exec.enabled,
     exec_sandbox: policy.exec.sandbox,
-    sandbox_available: policy.exec.enabled ? sandboxKind() !== 'none' : false,
-    sandbox_kind: sandboxKind(),
-    network: policy.exec.network,
-    filesystem: policy.exec.filesystem,
+    exec_backend: backend,
+    sandbox_available: policy.exec.enabled ? sandboxKindValue !== 'none' : false,
+    sandbox_kind: sandboxKindValue,
+    async_runs: policy.exec.enabled && backend === 'codex-app-server',
+    command_writable_roots: full ? 'unconfined' : [...policy.exec.writableRoots],
+    /**
+     * Effective command-name policy. `any-on-path` means any bare executable name
+     * resolves; `allowlist` means exec.allowedCommands applies.
+     */
+    command_policy: full ? 'any-on-path' : 'allowlist',
+    /** The configured allowlist, kept for reference; NOT in force when command_policy=any-on-path. */
+    configured_allowed_commands: [...policy.exec.allowedCommands],
+    /** The configured cwd roots, kept for reference; NOT in force under full access. */
+    configured_cwd_roots: [...policy.exec.cwdRoots],
+    /** The EFFECTIVE sandbox demand, not the configured one. */
+    exec_sandbox_effective: full ? 'none' : policy.exec.sandbox,
+    network: effectiveNetwork,
+    filesystem: effectiveFilesystem,
+    ...(full ? { configured_network: policy.exec.network, configured_filesystem: policy.exec.filesystem } : {}),
+    full_access: policy.exec.fullAccess,
+    diagnostics: diagnosticsView(),
     roots: policy.roots.map((root) => ({ label: root.label, path: root.path, writable: root.writable })),
     allowed_commands: policy.exec.allowedCommands,
     limits: policy.limits,
@@ -140,6 +246,17 @@ const EXEC_ANNOTATIONS = {
   destructiveHint: true,
   idempotentHint: false,
   openWorldHint: true,
+} as const;
+
+/**
+ * Reading a run's output is read-only. Terminating a run is described by
+ * {@link EXEC_ANNOTATIONS} because it stops a process.
+ */
+const RUN_READ_ANNOTATIONS = {
+  readOnlyHint: true,
+  destructiveHint: false,
+  idempotentHint: true,
+  openWorldHint: false,
 } as const;
 
 /**
@@ -244,10 +361,14 @@ export function registerDirectOpsTools(server: McpServer, runtime: DirectOpsRunt
         'Run one command directly on the DSH host — no agent session and no model reasoning. There is NO shell: '
         + 'pass cmd as a bare executable name from the server-side allowlist plus an argv array, so pipes, '
         + 'redirects and `;` are literal argument bytes rather than new commands. Returns exit_code, stdout, '
-        + 'stderr, duration, explicit truncation flags and whether the timeout killed the process group. '
-        + 'PROTOTYPE, NOT APPROVED: the OS sandbox denies a set of user-data trees (so ~/.ssh and siblings of a '
-        + 'root are refused), confines writes to exec.writableRoots, and can deny the network — but it is NOT full '
-        + 'path isolation, and filesystem=roots must not be read as "confined to the trusted roots". Disabled by '
+        + 'stderr, duration, explicit truncation flags, the backend that ran it, and the sandbox that was really '
+        + 'applied. The sandbox is chosen by server-side configuration, never by an argument. Normally it confines '
+        + 'writes to exec.writableRoots and can deny the network, but it is NOT full path isolation, and a '
+        + 'file-tool root of / does not grant command writes. With exec.backend="codex-app-server" the command '
+        + 'runs through a local codex app-server, which applies its own OS sandbox and creates no thread, turn or '
+        + 'model call. If an administrator has enabled exec.fullAccess, the result says so plainly: applied=false, '
+        + 'network=unconfined, filesystem=unconfined, any bare executable name resolves and the cwd may be any '
+        + 'existing directory, because codex is given dangerFullAccess and no OS sandbox is in force. Disabled by '
         + 'default, and sandbox=required refuses to run at all when no OS sandbox is available, so a refusal is '
         + 'never silently downgraded to an unconfined run.',
       inputSchema: z.object({
@@ -269,6 +390,70 @@ export function registerDirectOpsTools(server: McpServer, runtime: DirectOpsRunt
       max_output_bytes?: number;
       env?: Record<string, string>;
     }) => runCommand(args, runtime.policy())),
+  );
+
+  server.registerTool(
+    'dsh_start_command',
+    {
+      title: 'Start a long command and return a run_id (no agent)',
+      description:
+        'Start one allowlisted command on the DSH host and return a run_id immediately instead of blocking on '
+        + 'it — no agent session and no model reasoning. Requires the codex-app-server backend, because that is '
+        + 'the only local path that can stream output and stop a process after this call returns. Output is read '
+        + 'with dsh_read_command_output and stopped with dsh_terminate_command; the command is started exactly '
+        + 'once. The returned sandbox describes what was really applied, and a caller cannot widen it.',
+      inputSchema: z.object({
+        cmd: z.string().min(1).describe('Bare executable name from the host allowlist (no path, no shell)'),
+        args: z.array(z.string()).optional().describe('Argument vector, passed literally'),
+        cwd: z.string().optional().describe('Absolute working directory inside a trusted root'),
+        timeout_ms: z.number().int().min(1).optional().describe('Stop after this many ms (capped by configuration)'),
+        max_output_bytes: z.number().int().min(1).optional().describe('Per-stream capture budget'),
+        env: z.record(z.string(), z.string()).optional()
+          .describe('Extra environment variables; credential-shaped names are refused'),
+      }),
+      annotations: EXEC_ANNOTATIONS,
+    },
+    safe(async (args: {
+      cmd: string;
+      args?: string[];
+      cwd?: string;
+      timeout_ms?: number;
+      max_output_bytes?: number;
+      env?: Record<string, string>;
+    }) => startCommand(args, runtime.policy())),
+  );
+
+  server.registerTool(
+    'dsh_read_command_output',
+    {
+      title: "Read a run's output by run_id (no agent)",
+      description:
+        'Read the accumulated stdout/stderr of one run started with dsh_start_command, plus its status, exit '
+        + 'code and whether output was truncated. Pass since_seq from a previous read to receive only what '
+        + 'arrived after it. Read-only: it never starts or restarts the command.',
+      inputSchema: z.object({
+        run_id: z.string().min(1),
+        since_seq: z.number().int().min(0).optional()
+          .describe('Return only chunks newer than this seq (from the previous read)'),
+      }),
+      annotations: RUN_READ_ANNOTATIONS,
+    },
+    safe(async (args: { run_id: string; since_seq?: number }) =>
+      readRun(args.run_id, args.since_seq, runtime.policy())),
+  );
+
+  server.registerTool(
+    'dsh_terminate_command',
+    {
+      title: 'Terminate one running command by run_id (no agent)',
+      description:
+        'Stop exactly one run started with dsh_start_command, using the codex app-server terminate call, and '
+        + 'return its final state. A run that already exited reports terminated=false rather than pretending to '
+        + 'have stopped something. Other runs are unaffected.',
+      inputSchema: z.object({ run_id: z.string().min(1) }),
+      annotations: EXEC_ANNOTATIONS,
+    },
+    safe(async (args: { run_id: string }) => terminateRun(args.run_id, runtime.policy())),
   );
 
   server.registerTool(

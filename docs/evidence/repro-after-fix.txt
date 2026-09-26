@@ -1,6 +1,6 @@
-root      = /Users/sunny/Library/Caches/dsh-chatgpt-bridge-tests/reproA-eqfhAl
+root      = <HOME>/Library/Caches/dsh-chatgpt-bridge-tests/reproA-eqfhAl
 authorised roots = [
-  '/Users/sunny/Library/Caches/dsh-chatgpt-bridge-tests/reproA-eqfhAl'
+  '<HOME>/Library/Caches/dsh-chatgpt-bridge-tests/reproA-eqfhAl'
 ]
 fixture   = /private/tmp/dsh-repro-Q6fSGj/outside-fixture.txt (HOME? false )
 

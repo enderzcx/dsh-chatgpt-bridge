@@ -215,12 +215,26 @@ function makeLiveAgent(id, workspacePath, extras = {}) {
       snapshotEvents: () => events,
       requestHeader: () => undefined,
     },
-    followup(message) {
-      agent.lastFollowup = message;
+    /** DSH's one delivery primitive; `followup`/`steer` route through it. */
+    send(message, target = 'next-turn', wakeup = true) {
+      agent.sendCount = (agent.sendCount ?? 0) + 1;
+      agent.lastSend = { message, target, wakeup };
+      if (target === 'next-step') {
+        agent.steerCount = (agent.steerCount ?? 0) + 1;
+      } else {
+        agent.lastFollowup = message;
+      }
       agent.status = extras.followupStatus ?? 'running';
       inbox.hasPending = true;
       inbox.nextTurn = inbox.nextTurn ?? [];
-      inbox.nextTurn.push({ id: 'm' });
+      inbox.nextStep = inbox.nextStep ?? [];
+      (target === 'next-step' ? inbox.nextStep : inbox.nextTurn).push(message ?? { id: 'm' });
+    },
+    followup(message) {
+      agent.send(message, 'next-turn', true);
+    },
+    steer(message) {
+      agent.send(message, 'next-step', true);
     },
     cancel() {
       agent.status = 'idle';
@@ -524,14 +538,21 @@ function settle(agent) {
   agent.inbox.nextTurn = [];
 }
 
-test('MCP surface exposes 23 dsh_* tools (v0.5.0 Control Plane Reliability)', async () => {
+test('MCP surface exposes 27 dsh_* agent-control tools (v0.5.0 Control Plane Reliability)', async () => {
   const src = await import('node:fs');
   const text = src.readFileSync(new URL('../../src/mcp.ts', import.meta.url), 'utf8');
   const count = [...text.matchAll(/server\.registerTool\(/g)].length;
-  assert.equal(count, 23);
+  assert.equal(count, 27);
   assert.match(text, /dsh_update_goal/);
   assert.match(text, /dsh_create_goal/);
   assert.match(text, /dsh_revise_goal/);
+  // Pending-input management travels over the same MCP surface.
+  assert.match(text, /dsh_list_pending_messages/);
+  assert.match(text, /dsh_promote_pending_message/);
+  assert.match(text, /dsh_edit_pending_message/);
+  assert.match(text, /dsh_withdraw_pending_message/);
+  // The direct surface (including the codex execution backend) lives apart from
+  // this file and is asserted in test/unit/direct-codex-backend.test.mjs.
 });
 
 test('Test A — waitGoal/terminal reconciles pending push todo after git push succeeds', async () => {
@@ -631,10 +652,10 @@ test('Test D/E — blocked npm leaves GitHub Release runnable; re-arm defer cont
   assert.equal(waited.blocked.reason, 'npm_2fa_required');
 
   let followups = 0;
-  const original = agent.followup.bind(agent);
-  agent.followup = (...args) => {
-    followups += 1;
-    return original(...args);
+  const original = agent.send.bind(agent);
+  agent.send = (message, target, wakeup) => {
+    if (target !== 'next-step') followups += 1;
+    return original(message, target, wakeup);
   };
   const resumed = await bridge.startGoal({
     workspace: 'ws-1',
@@ -805,10 +826,10 @@ test('Test 10 — resume message names completed destructive actions', async () 
   );
   await bridge.waitGoal(started.session_id, 1);
   let sent = '';
-  const original = agent.followup.bind(agent);
-  agent.followup = (message) => {
+  const original = agent.send.bind(agent);
+  agent.send = (message, target, wakeup) => {
     sent = JSON.stringify(message);
-    return original(message);
+    return original(message, target, wakeup);
   };
   await bridge.updateGoal({
     session_id: started.session_id,

@@ -65,13 +65,31 @@ switches are server-side configuration only.
         execMaxTimeoutMs: 600000
       exec:
         enabled: false          # deliberate, high-privilege opt-in
-        allowedCommands: []     # required when enabled; there is no "any command"
+        allowedCommands: []     # required when enabled UNLESS fullAccess is true
         cwdRoots: []            # where relative paths resolve; grants NOTHING
         writableRoots: []       # the ONLY paths the child may write
         network: deny           # OS sandbox denies network
         filesystem: roots       # OS sandbox confines reads AND writes
         sandbox: required       # refuse to run when no OS sandbox can enforce this
+        pathEntries: []         # extra PATH entries used to RESOLVE an allowlisted name
+        fullAccess: false       # administrator-only: NO OS sandbox at all (see below)
         envPassthrough: [PATH, HOME, SHELL, USER, LOGNAME, LANG, LC_ALL, TMPDIR, TERM]
+
+### Administrator full access (`exec.fullAccess`)
+
+Default `false`. When set to `true` the command child is **not** sandboxed:
+codex is given `dangerFullAccess`, so any bare executable name resolves on PATH,
+any existing directory may be used as the cwd, and reads, writes, `$TMPDIR`,
+`/tmp` and the network are unconfined. It requires the `codex-app-server`
+backend, and it can only be set in this trusted configuration — no tool argument
+can enable or widen it.
+
+In that mode the effective state is reported rather than the configured one:
+results and `dsh_operator_roots` give `applied: false`,
+`network: "unconfined"`, `filesystem: "unconfined"`, `cwd_restricted: false`,
+`command_restricted: false` and `command_policy: "any-on-path"`, while the
+configured `network`/`filesystem`/`allowed_commands`/`cwd_roots` values appear
+under `configured_*` names so they cannot be mistaken for the boundary in force.
         pathEntries: []
 ```
 

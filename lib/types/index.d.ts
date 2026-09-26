@@ -81,6 +81,13 @@ export declare const Config: import("@deepseek-ai/schemastery").default<Schemast
             sandbox: import("@deepseek-ai/schemastery").default<"required" | "preferred", "required" | "preferred">;
             envPassthrough: import("@deepseek-ai/schemastery").default<string[], string[]>;
             pathEntries: import("@deepseek-ai/schemastery").default<string[], string[]>;
+            fullAccess: import("@deepseek-ai/schemastery").default<boolean, boolean>;
+            codexBin: import("@deepseek-ai/schemastery").default<string, string>;
+            codexArgs: import("@deepseek-ai/schemastery").default<string[], string[]>;
+            codexHome: import("@deepseek-ai/schemastery").default<string, string>;
+            backend: import("@deepseek-ai/schemastery").default<"sandbox-exec" | "codex-app-server", "sandbox-exec" | "codex-app-server">;
+            asyncMaxRuns: import("@deepseek-ai/schemastery").default<number, number>;
+            asyncMaxOutputBytes: import("@deepseek-ai/schemastery").default<number, number>;
         }>, Schemastery.ObjectT<{
             enabled: import("@deepseek-ai/schemastery").default<boolean, boolean>;
             allowedCommands: import("@deepseek-ai/schemastery").default<string[], string[]>;
@@ -91,6 +98,13 @@ export declare const Config: import("@deepseek-ai/schemastery").default<Schemast
             sandbox: import("@deepseek-ai/schemastery").default<"required" | "preferred", "required" | "preferred">;
             envPassthrough: import("@deepseek-ai/schemastery").default<string[], string[]>;
             pathEntries: import("@deepseek-ai/schemastery").default<string[], string[]>;
+            fullAccess: import("@deepseek-ai/schemastery").default<boolean, boolean>;
+            codexBin: import("@deepseek-ai/schemastery").default<string, string>;
+            codexArgs: import("@deepseek-ai/schemastery").default<string[], string[]>;
+            codexHome: import("@deepseek-ai/schemastery").default<string, string>;
+            backend: import("@deepseek-ai/schemastery").default<"sandbox-exec" | "codex-app-server", "sandbox-exec" | "codex-app-server">;
+            asyncMaxRuns: import("@deepseek-ai/schemastery").default<number, number>;
+            asyncMaxOutputBytes: import("@deepseek-ai/schemastery").default<number, number>;
         }>>;
     }>, Schemastery.ObjectT<{
         enabled: import("@deepseek-ai/schemastery").default<boolean, boolean>;
@@ -126,6 +140,13 @@ export declare const Config: import("@deepseek-ai/schemastery").default<Schemast
             sandbox: import("@deepseek-ai/schemastery").default<"required" | "preferred", "required" | "preferred">;
             envPassthrough: import("@deepseek-ai/schemastery").default<string[], string[]>;
             pathEntries: import("@deepseek-ai/schemastery").default<string[], string[]>;
+            fullAccess: import("@deepseek-ai/schemastery").default<boolean, boolean>;
+            codexBin: import("@deepseek-ai/schemastery").default<string, string>;
+            codexArgs: import("@deepseek-ai/schemastery").default<string[], string[]>;
+            codexHome: import("@deepseek-ai/schemastery").default<string, string>;
+            backend: import("@deepseek-ai/schemastery").default<"sandbox-exec" | "codex-app-server", "sandbox-exec" | "codex-app-server">;
+            asyncMaxRuns: import("@deepseek-ai/schemastery").default<number, number>;
+            asyncMaxOutputBytes: import("@deepseek-ai/schemastery").default<number, number>;
         }>, Schemastery.ObjectT<{
             enabled: import("@deepseek-ai/schemastery").default<boolean, boolean>;
             allowedCommands: import("@deepseek-ai/schemastery").default<string[], string[]>;
@@ -136,6 +157,13 @@ export declare const Config: import("@deepseek-ai/schemastery").default<Schemast
             sandbox: import("@deepseek-ai/schemastery").default<"required" | "preferred", "required" | "preferred">;
             envPassthrough: import("@deepseek-ai/schemastery").default<string[], string[]>;
             pathEntries: import("@deepseek-ai/schemastery").default<string[], string[]>;
+            fullAccess: import("@deepseek-ai/schemastery").default<boolean, boolean>;
+            codexBin: import("@deepseek-ai/schemastery").default<string, string>;
+            codexArgs: import("@deepseek-ai/schemastery").default<string[], string[]>;
+            codexHome: import("@deepseek-ai/schemastery").default<string, string>;
+            backend: import("@deepseek-ai/schemastery").default<"sandbox-exec" | "codex-app-server", "sandbox-exec" | "codex-app-server">;
+            asyncMaxRuns: import("@deepseek-ai/schemastery").default<number, number>;
+            asyncMaxOutputBytes: import("@deepseek-ai/schemastery").default<number, number>;
         }>>;
     }>>;
 }>, Schemastery.ObjectT<{
@@ -210,6 +238,13 @@ export declare const Config: import("@deepseek-ai/schemastery").default<Schemast
             sandbox: import("@deepseek-ai/schemastery").default<"required" | "preferred", "required" | "preferred">;
             envPassthrough: import("@deepseek-ai/schemastery").default<string[], string[]>;
             pathEntries: import("@deepseek-ai/schemastery").default<string[], string[]>;
+            fullAccess: import("@deepseek-ai/schemastery").default<boolean, boolean>;
+            codexBin: import("@deepseek-ai/schemastery").default<string, string>;
+            codexArgs: import("@deepseek-ai/schemastery").default<string[], string[]>;
+            codexHome: import("@deepseek-ai/schemastery").default<string, string>;
+            backend: import("@deepseek-ai/schemastery").default<"sandbox-exec" | "codex-app-server", "sandbox-exec" | "codex-app-server">;
+            asyncMaxRuns: import("@deepseek-ai/schemastery").default<number, number>;
+            asyncMaxOutputBytes: import("@deepseek-ai/schemastery").default<number, number>;
         }>, Schemastery.ObjectT<{
             enabled: import("@deepseek-ai/schemastery").default<boolean, boolean>;
             allowedCommands: import("@deepseek-ai/schemastery").default<string[], string[]>;
@@ -220,6 +255,13 @@ export declare const Config: import("@deepseek-ai/schemastery").default<Schemast
             sandbox: import("@deepseek-ai/schemastery").default<"required" | "preferred", "required" | "preferred">;
             envPassthrough: import("@deepseek-ai/schemastery").default<string[], string[]>;
             pathEntries: import("@deepseek-ai/schemastery").default<string[], string[]>;
+            fullAccess: import("@deepseek-ai/schemastery").default<boolean, boolean>;
+            codexBin: import("@deepseek-ai/schemastery").default<string, string>;
+            codexArgs: import("@deepseek-ai/schemastery").default<string[], string[]>;
+            codexHome: import("@deepseek-ai/schemastery").default<string, string>;
+            backend: import("@deepseek-ai/schemastery").default<"sandbox-exec" | "codex-app-server", "sandbox-exec" | "codex-app-server">;
+            asyncMaxRuns: import("@deepseek-ai/schemastery").default<number, number>;
+            asyncMaxOutputBytes: import("@deepseek-ai/schemastery").default<number, number>;
         }>>;
     }>, Schemastery.ObjectT<{
         enabled: import("@deepseek-ai/schemastery").default<boolean, boolean>;
@@ -255,6 +297,13 @@ export declare const Config: import("@deepseek-ai/schemastery").default<Schemast
             sandbox: import("@deepseek-ai/schemastery").default<"required" | "preferred", "required" | "preferred">;
             envPassthrough: import("@deepseek-ai/schemastery").default<string[], string[]>;
             pathEntries: import("@deepseek-ai/schemastery").default<string[], string[]>;
+            fullAccess: import("@deepseek-ai/schemastery").default<boolean, boolean>;
+            codexBin: import("@deepseek-ai/schemastery").default<string, string>;
+            codexArgs: import("@deepseek-ai/schemastery").default<string[], string[]>;
+            codexHome: import("@deepseek-ai/schemastery").default<string, string>;
+            backend: import("@deepseek-ai/schemastery").default<"sandbox-exec" | "codex-app-server", "sandbox-exec" | "codex-app-server">;
+            asyncMaxRuns: import("@deepseek-ai/schemastery").default<number, number>;
+            asyncMaxOutputBytes: import("@deepseek-ai/schemastery").default<number, number>;
         }>, Schemastery.ObjectT<{
             enabled: import("@deepseek-ai/schemastery").default<boolean, boolean>;
             allowedCommands: import("@deepseek-ai/schemastery").default<string[], string[]>;
@@ -265,6 +314,13 @@ export declare const Config: import("@deepseek-ai/schemastery").default<Schemast
             sandbox: import("@deepseek-ai/schemastery").default<"required" | "preferred", "required" | "preferred">;
             envPassthrough: import("@deepseek-ai/schemastery").default<string[], string[]>;
             pathEntries: import("@deepseek-ai/schemastery").default<string[], string[]>;
+            fullAccess: import("@deepseek-ai/schemastery").default<boolean, boolean>;
+            codexBin: import("@deepseek-ai/schemastery").default<string, string>;
+            codexArgs: import("@deepseek-ai/schemastery").default<string[], string[]>;
+            codexHome: import("@deepseek-ai/schemastery").default<string, string>;
+            backend: import("@deepseek-ai/schemastery").default<"sandbox-exec" | "codex-app-server", "sandbox-exec" | "codex-app-server">;
+            asyncMaxRuns: import("@deepseek-ai/schemastery").default<number, number>;
+            asyncMaxOutputBytes: import("@deepseek-ai/schemastery").default<number, number>;
         }>>;
     }>>;
 }>>;

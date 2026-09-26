@@ -1,5 +1,126 @@
 # Changelog
 
+## 0.6.6 — 2026-09-26 · Administrator full access, call receipts, Codex command backend
+
+### Added
+
+- **`exec.fullAccess` (default `false`, administrator-only).** When enabled the
+  command child runs with **no OS sandbox**: codex is given `dangerFullAccess`, any
+  bare executable name resolves on PATH, any existing directory may be the cwd, and
+  reads, writes, `$TMPDIR`/`/tmp` and the network are unconfined. It can only be set
+  by trusted server-side configuration — no tool argument can reach it — and it
+  requires the `codex-app-server` backend. Results and `dsh_operator_roots` report
+  the mode plainly: `applied: false`, `network`/`filesystem: unconfined`, with the
+  configured values moved to `configured_*` so they cannot be mistaken for the
+  boundary in force.
+- **`exec.pathEntries`.** Extra PATH entries used to resolve an allowlisted name,
+  needed on hosts whose service PATH lacks the install prefix.
+- **`codex app-server` command backend.** Commands run through a local
+  `codex app-server` over stdio JSON-RPC using only `command/exec`; no thread, turn
+  or model call is ever created. Includes async runs (`dsh_start_command`,
+  `dsh_read_command_output`, `dsh_terminate_command`) with incremental output and
+  termination confirmation.
+- **Steering and pending-message management.** `dsh_send_message` gains a
+  backward-compatible `delivery` (`followup` default, `steer` for the next step
+  boundary), plus `dsh_list_pending_messages`, `dsh_promote_pending_message`,
+  `dsh_edit_pending_message` and `dsh_withdraw_pending_message`, over DSH's own
+  Agent inbox.
+- **Bounded, secret-free call receipts.** One server-generated correlation id per
+  call, returned in `_meta["dsh/correlation_id"]`, with
+  `http_received`/`handler_started`/`handler_completed|failed` phases, UTC times and
+  fixed error codes. Values are accepted only from allowlists (registered tool
+  names, served MCP methods, this program's own error codes); anything else is
+  recorded as `UNREGISTERED`/`UNKNOWN_METHOD`/`UNKNOWN`. In-memory ring, bounded,
+  drops and write failures disclosed.
+- **MCP tool annotations on every tool**, matching reachable behaviour: read-only
+  tools are genuinely side-effect free, agent-driving tools are destructive and
+  open-world, and command tools are open-world.
+
+### Changed
+
+- Client-facing tool descriptions and `next_action` text state capability and
+  status instead of instructing the model to call tools repeatedly or forbidding it
+  from ending a turn. The machine-readable `continuation_required` / `next_tool_call`
+  fields are unchanged, and approval is still never granted automatically.
+
+### Fixed
+
+- The app-server child is given an isolated `CODEX_HOME`, so it no longer reads the
+  user's global `~/.codex/config.toml`.
+- `timeoutMs`/`disableTimeout` are forwarded to `command/exec`; previously a
+  requested deadline was not transmitted and the server applied its own.
+- Streamed output is no longer duplicated by the final cumulative result, and
+  multi-byte characters split across chunks are decoded correctly.
+- A queued message claimed before its receipt is reported as `admitted` rather than
+  as a delivery failure.
+
+## 0.5.3 — 2026-09-25 · Steering and pending-message management
+
+`dsh_send_message` gains a backward-compatible `delivery` choice, and the
+pending inbox becomes manageable by identity. Delivery uses DSH's own `send`,
+repositioning reuses the session controller's `remove(id)` + `steer(message)`
+sequence, and edit/withdraw use the inbox's own `replace` / `remove`; the
+bridge keeps no queue of its own, and no turn is cancelled or re-sent to fake
+an interruption.
+
+### Added
+
+- **`dsh_send_message` `delivery`** — `"followup"` (default, unchanged
+  behaviour: the message becomes its own next turn) or `"steer"` (the running
+  agent consumes it at its nearest step boundary). The reply keeps the legacy
+  `accepted: true` acknowledgement (still only "DSH queued it") and adds the
+  real destination, the new `message_id`, its `version`, and the live queue
+  sizes.
+- **`dsh_list_pending_messages`** — accepted-but-unclaimed messages with stable
+  ids, in claim order (`next_step` before `next_turn`).
+- **`dsh_promote_pending_message`** — turn a message queued for a *later* turn
+  into steering for the running turn, using DSH's own queue rule: the item must
+  still be in `next-turn` and the agent must be `running`, and the move is
+  `inbox.remove(id)` followed by `agent.steer(sameMessage)`. The message is
+  never copied, DSH keeps its own wake/cancellation handling, and repeated
+  promotions keep their order instead of being reversed.
+- **`dsh_edit_pending_message`** — replace a pending message's text while
+  preserving its identity, deep-frozen through DSH's own `freezeMessage`.
+  Queue edits accept text only: a message carrying attachments or non-text
+  blocks is refused with `MESSAGE_EDIT_NON_TEXT` rather than losing that data.
+- **`dsh_withdraw_pending_message`** — remove one pending message without
+  cancelling the in-flight turn (`dsh_cancel_task` still discards the whole
+  queue, which is DSH's own behaviour).
+
+### Notes
+
+- `dsh_list_pending_messages` is read-only. A cold session is read from its
+  durable `agent/inbox/spliced` history; an idle session is never woken and no
+  agent is created or resumed just to answer it.
+- Every pending message carries a `version` content digest. Passing it back as
+  `expected_version` makes a mutation refuse (`MESSAGE_VERSION_CONFLICT`) when
+  another client changed the same `message_id` first, so a stale read cannot
+  silently overwrite a newer edit.
+- Delivery reports `state: "queued"`. That means DSH accepted the message into
+  a pending list, never that the model has read or understood it: admission is
+  recorded later, when a turn or step boundary claims the message into the
+  durable transcript.
+- A message that is no longer pending is refused by name rather than guessed
+  at: `MESSAGE_ALREADY_ADMITTED` (already in the transcript),
+  `MESSAGE_NOT_PENDING` (claimed, withdrawn, or discarded by a cancellation),
+  `MESSAGE_ID_UNKNOWN`, `MESSAGE_NOT_PROMOTABLE` (already steering),
+  `STEER_UNAVAILABLE` (the session is not running), `MESSAGE_EDIT_NON_TEXT`,
+  `DELIVERY_UNSUPPORTED`, and `INBOX_UNAVAILABLE`.
+- Promoting a queued turn to steering verifies the native capability *before*
+  removing anything, and if the re-delivery throws it checks DSH's own state
+  first: a message that is still queued or already admitted is reported as such
+  rather than re-sent (which would duplicate it), and an undelivered message is
+  restored with the identical object at its recorded position. When that
+  restore cannot be proven the error says `STEER_RECOVERY_REQUIRED` instead of
+  claiming nothing was lost.
+- Goal supervision keeps the plain `followup` delivery point, so goal metadata
+  and manual message management observe one queue in one order. A supervised
+  Goal's control message is protected from generic queue edits: promoting,
+  editing or withdrawing one is refused with `GOAL_MESSAGE_PROTECTED`, a
+  superseded revision is refused with `GOAL_MESSAGE_STALE`, and both point at
+  `dsh_update_goal`.
+- No permission, approval, credential, or workspace-policy behaviour changed.
+
 ## 0.5.2 — 2026-09-21 · Web question ownership
 
 The bridge no longer steals `user-questions/request` from the DSH Web surface.
@@ -59,7 +180,9 @@ question-ownership fix in 0.5.2.
   downgrading silently. `sandbox-exec` is deprecated by Apple and is documented
   as such.
 - Command execution defaults to off and needs both `exec.enabled` and a non-empty
-  `allowedCommands`; there is no "any command" mode.
+  `allowedCommands`. There is no implicit "any command" mode; the only way to run
+  arbitrary executable names is the explicit, administrator-only `exec.fullAccess`
+  switch described under 0.6.6 below.
 - The child process environment is rebuilt from an explicit passthrough list;
   credential-shaped `env` overrides are refused and secret-shaped output is
   redacted.

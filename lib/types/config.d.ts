@@ -93,7 +93,10 @@ export declare const ConfigSchema: z<Schemastery.ObjectS<{
         exec: z<Schemastery.ObjectS<{
             /** High-privilege; a local administrator must turn this on deliberately. */
             enabled: z<boolean, boolean>;
-            /** Required when enabled: there is no "any command" mode. */
+            /**
+             * Required when enabled UNLESS `fullAccess` is true. There is no implicit
+             * "any command" mode: a restricted policy always needs a name allowlist.
+             */
             allowedCommands: z<string[], string[]>;
             /** Trusted roots a command cwd may use; defaults to the read roots. */
             cwdRoots: z<string[], string[]>;
@@ -104,11 +107,43 @@ export declare const ConfigSchema: z<Schemastery.ObjectS<{
             /** "required": refuse to run when no OS sandbox can enforce the boundary. */
             sandbox: z<"required" | "preferred", "required" | "preferred">;
             envPassthrough: z<string[], string[]>;
+            /**
+             * Extra PATH entries used to RESOLVE an allowlisted name. Needed on hosts
+             * whose service PATH lacks the install prefix (for example
+             * `/opt/homebrew/bin` for a Homebrew `node`).
+             */
             pathEntries: z<string[], string[]>;
+            /**
+             * Administrator-only full access. When true the child runs with NO OS
+             * sandbox: any bare executable name resolves, any existing directory may be
+             * the cwd, and reads, writes, temp directories and the network are
+             * unconfined (codex `dangerFullAccess`). Default false, requires the
+             * `codex-app-server` backend, and can ONLY be set by this trusted
+             * configuration — no tool argument can reach it.
+             */
+            fullAccess: z<boolean, boolean>;
+            /**
+             * Absolute path to the codex executable for the app-server backend. Empty
+             * means unset; the bridge never guesses it from PATH.
+             */
+            codexBin: z<string, string>;
+            /** Extra argv for the app-server child, e.g. `-c key=value`. */
+            codexArgs: z<string[], string[]>;
+            /**
+             * Isolated CODEX_HOME for the app-server child, so it does not read the
+             * user's global ~/.codex configuration.
+             */
+            codexHome: z<string, string>;
+            backend: z<"sandbox-exec" | "codex-app-server", "sandbox-exec" | "codex-app-server">;
+            asyncMaxRuns: z<number, number>;
+            asyncMaxOutputBytes: z<number, number>;
         }>, Schemastery.ObjectT<{
             /** High-privilege; a local administrator must turn this on deliberately. */
             enabled: z<boolean, boolean>;
-            /** Required when enabled: there is no "any command" mode. */
+            /**
+             * Required when enabled UNLESS `fullAccess` is true. There is no implicit
+             * "any command" mode: a restricted policy always needs a name allowlist.
+             */
             allowedCommands: z<string[], string[]>;
             /** Trusted roots a command cwd may use; defaults to the read roots. */
             cwdRoots: z<string[], string[]>;
@@ -119,7 +154,36 @@ export declare const ConfigSchema: z<Schemastery.ObjectS<{
             /** "required": refuse to run when no OS sandbox can enforce the boundary. */
             sandbox: z<"required" | "preferred", "required" | "preferred">;
             envPassthrough: z<string[], string[]>;
+            /**
+             * Extra PATH entries used to RESOLVE an allowlisted name. Needed on hosts
+             * whose service PATH lacks the install prefix (for example
+             * `/opt/homebrew/bin` for a Homebrew `node`).
+             */
             pathEntries: z<string[], string[]>;
+            /**
+             * Administrator-only full access. When true the child runs with NO OS
+             * sandbox: any bare executable name resolves, any existing directory may be
+             * the cwd, and reads, writes, temp directories and the network are
+             * unconfined (codex `dangerFullAccess`). Default false, requires the
+             * `codex-app-server` backend, and can ONLY be set by this trusted
+             * configuration — no tool argument can reach it.
+             */
+            fullAccess: z<boolean, boolean>;
+            /**
+             * Absolute path to the codex executable for the app-server backend. Empty
+             * means unset; the bridge never guesses it from PATH.
+             */
+            codexBin: z<string, string>;
+            /** Extra argv for the app-server child, e.g. `-c key=value`. */
+            codexArgs: z<string[], string[]>;
+            /**
+             * Isolated CODEX_HOME for the app-server child, so it does not read the
+             * user's global ~/.codex configuration.
+             */
+            codexHome: z<string, string>;
+            backend: z<"sandbox-exec" | "codex-app-server", "sandbox-exec" | "codex-app-server">;
+            asyncMaxRuns: z<number, number>;
+            asyncMaxOutputBytes: z<number, number>;
         }>>;
     }>, Schemastery.ObjectT<{
         /** Master switch. Closed unless true AND explicit roots are named. */
@@ -154,7 +218,10 @@ export declare const ConfigSchema: z<Schemastery.ObjectS<{
         exec: z<Schemastery.ObjectS<{
             /** High-privilege; a local administrator must turn this on deliberately. */
             enabled: z<boolean, boolean>;
-            /** Required when enabled: there is no "any command" mode. */
+            /**
+             * Required when enabled UNLESS `fullAccess` is true. There is no implicit
+             * "any command" mode: a restricted policy always needs a name allowlist.
+             */
             allowedCommands: z<string[], string[]>;
             /** Trusted roots a command cwd may use; defaults to the read roots. */
             cwdRoots: z<string[], string[]>;
@@ -165,11 +232,43 @@ export declare const ConfigSchema: z<Schemastery.ObjectS<{
             /** "required": refuse to run when no OS sandbox can enforce the boundary. */
             sandbox: z<"required" | "preferred", "required" | "preferred">;
             envPassthrough: z<string[], string[]>;
+            /**
+             * Extra PATH entries used to RESOLVE an allowlisted name. Needed on hosts
+             * whose service PATH lacks the install prefix (for example
+             * `/opt/homebrew/bin` for a Homebrew `node`).
+             */
             pathEntries: z<string[], string[]>;
+            /**
+             * Administrator-only full access. When true the child runs with NO OS
+             * sandbox: any bare executable name resolves, any existing directory may be
+             * the cwd, and reads, writes, temp directories and the network are
+             * unconfined (codex `dangerFullAccess`). Default false, requires the
+             * `codex-app-server` backend, and can ONLY be set by this trusted
+             * configuration — no tool argument can reach it.
+             */
+            fullAccess: z<boolean, boolean>;
+            /**
+             * Absolute path to the codex executable for the app-server backend. Empty
+             * means unset; the bridge never guesses it from PATH.
+             */
+            codexBin: z<string, string>;
+            /** Extra argv for the app-server child, e.g. `-c key=value`. */
+            codexArgs: z<string[], string[]>;
+            /**
+             * Isolated CODEX_HOME for the app-server child, so it does not read the
+             * user's global ~/.codex configuration.
+             */
+            codexHome: z<string, string>;
+            backend: z<"sandbox-exec" | "codex-app-server", "sandbox-exec" | "codex-app-server">;
+            asyncMaxRuns: z<number, number>;
+            asyncMaxOutputBytes: z<number, number>;
         }>, Schemastery.ObjectT<{
             /** High-privilege; a local administrator must turn this on deliberately. */
             enabled: z<boolean, boolean>;
-            /** Required when enabled: there is no "any command" mode. */
+            /**
+             * Required when enabled UNLESS `fullAccess` is true. There is no implicit
+             * "any command" mode: a restricted policy always needs a name allowlist.
+             */
             allowedCommands: z<string[], string[]>;
             /** Trusted roots a command cwd may use; defaults to the read roots. */
             cwdRoots: z<string[], string[]>;
@@ -180,7 +279,36 @@ export declare const ConfigSchema: z<Schemastery.ObjectS<{
             /** "required": refuse to run when no OS sandbox can enforce the boundary. */
             sandbox: z<"required" | "preferred", "required" | "preferred">;
             envPassthrough: z<string[], string[]>;
+            /**
+             * Extra PATH entries used to RESOLVE an allowlisted name. Needed on hosts
+             * whose service PATH lacks the install prefix (for example
+             * `/opt/homebrew/bin` for a Homebrew `node`).
+             */
             pathEntries: z<string[], string[]>;
+            /**
+             * Administrator-only full access. When true the child runs with NO OS
+             * sandbox: any bare executable name resolves, any existing directory may be
+             * the cwd, and reads, writes, temp directories and the network are
+             * unconfined (codex `dangerFullAccess`). Default false, requires the
+             * `codex-app-server` backend, and can ONLY be set by this trusted
+             * configuration — no tool argument can reach it.
+             */
+            fullAccess: z<boolean, boolean>;
+            /**
+             * Absolute path to the codex executable for the app-server backend. Empty
+             * means unset; the bridge never guesses it from PATH.
+             */
+            codexBin: z<string, string>;
+            /** Extra argv for the app-server child, e.g. `-c key=value`. */
+            codexArgs: z<string[], string[]>;
+            /**
+             * Isolated CODEX_HOME for the app-server child, so it does not read the
+             * user's global ~/.codex configuration.
+             */
+            codexHome: z<string, string>;
+            backend: z<"sandbox-exec" | "codex-app-server", "sandbox-exec" | "codex-app-server">;
+            asyncMaxRuns: z<number, number>;
+            asyncMaxOutputBytes: z<number, number>;
         }>>;
     }>>;
 }>, Schemastery.ObjectT<{
@@ -272,7 +400,10 @@ export declare const ConfigSchema: z<Schemastery.ObjectS<{
         exec: z<Schemastery.ObjectS<{
             /** High-privilege; a local administrator must turn this on deliberately. */
             enabled: z<boolean, boolean>;
-            /** Required when enabled: there is no "any command" mode. */
+            /**
+             * Required when enabled UNLESS `fullAccess` is true. There is no implicit
+             * "any command" mode: a restricted policy always needs a name allowlist.
+             */
             allowedCommands: z<string[], string[]>;
             /** Trusted roots a command cwd may use; defaults to the read roots. */
             cwdRoots: z<string[], string[]>;
@@ -283,11 +414,43 @@ export declare const ConfigSchema: z<Schemastery.ObjectS<{
             /** "required": refuse to run when no OS sandbox can enforce the boundary. */
             sandbox: z<"required" | "preferred", "required" | "preferred">;
             envPassthrough: z<string[], string[]>;
+            /**
+             * Extra PATH entries used to RESOLVE an allowlisted name. Needed on hosts
+             * whose service PATH lacks the install prefix (for example
+             * `/opt/homebrew/bin` for a Homebrew `node`).
+             */
             pathEntries: z<string[], string[]>;
+            /**
+             * Administrator-only full access. When true the child runs with NO OS
+             * sandbox: any bare executable name resolves, any existing directory may be
+             * the cwd, and reads, writes, temp directories and the network are
+             * unconfined (codex `dangerFullAccess`). Default false, requires the
+             * `codex-app-server` backend, and can ONLY be set by this trusted
+             * configuration — no tool argument can reach it.
+             */
+            fullAccess: z<boolean, boolean>;
+            /**
+             * Absolute path to the codex executable for the app-server backend. Empty
+             * means unset; the bridge never guesses it from PATH.
+             */
+            codexBin: z<string, string>;
+            /** Extra argv for the app-server child, e.g. `-c key=value`. */
+            codexArgs: z<string[], string[]>;
+            /**
+             * Isolated CODEX_HOME for the app-server child, so it does not read the
+             * user's global ~/.codex configuration.
+             */
+            codexHome: z<string, string>;
+            backend: z<"sandbox-exec" | "codex-app-server", "sandbox-exec" | "codex-app-server">;
+            asyncMaxRuns: z<number, number>;
+            asyncMaxOutputBytes: z<number, number>;
         }>, Schemastery.ObjectT<{
             /** High-privilege; a local administrator must turn this on deliberately. */
             enabled: z<boolean, boolean>;
-            /** Required when enabled: there is no "any command" mode. */
+            /**
+             * Required when enabled UNLESS `fullAccess` is true. There is no implicit
+             * "any command" mode: a restricted policy always needs a name allowlist.
+             */
             allowedCommands: z<string[], string[]>;
             /** Trusted roots a command cwd may use; defaults to the read roots. */
             cwdRoots: z<string[], string[]>;
@@ -298,7 +461,36 @@ export declare const ConfigSchema: z<Schemastery.ObjectS<{
             /** "required": refuse to run when no OS sandbox can enforce the boundary. */
             sandbox: z<"required" | "preferred", "required" | "preferred">;
             envPassthrough: z<string[], string[]>;
+            /**
+             * Extra PATH entries used to RESOLVE an allowlisted name. Needed on hosts
+             * whose service PATH lacks the install prefix (for example
+             * `/opt/homebrew/bin` for a Homebrew `node`).
+             */
             pathEntries: z<string[], string[]>;
+            /**
+             * Administrator-only full access. When true the child runs with NO OS
+             * sandbox: any bare executable name resolves, any existing directory may be
+             * the cwd, and reads, writes, temp directories and the network are
+             * unconfined (codex `dangerFullAccess`). Default false, requires the
+             * `codex-app-server` backend, and can ONLY be set by this trusted
+             * configuration — no tool argument can reach it.
+             */
+            fullAccess: z<boolean, boolean>;
+            /**
+             * Absolute path to the codex executable for the app-server backend. Empty
+             * means unset; the bridge never guesses it from PATH.
+             */
+            codexBin: z<string, string>;
+            /** Extra argv for the app-server child, e.g. `-c key=value`. */
+            codexArgs: z<string[], string[]>;
+            /**
+             * Isolated CODEX_HOME for the app-server child, so it does not read the
+             * user's global ~/.codex configuration.
+             */
+            codexHome: z<string, string>;
+            backend: z<"sandbox-exec" | "codex-app-server", "sandbox-exec" | "codex-app-server">;
+            asyncMaxRuns: z<number, number>;
+            asyncMaxOutputBytes: z<number, number>;
         }>>;
     }>, Schemastery.ObjectT<{
         /** Master switch. Closed unless true AND explicit roots are named. */
@@ -333,7 +525,10 @@ export declare const ConfigSchema: z<Schemastery.ObjectS<{
         exec: z<Schemastery.ObjectS<{
             /** High-privilege; a local administrator must turn this on deliberately. */
             enabled: z<boolean, boolean>;
-            /** Required when enabled: there is no "any command" mode. */
+            /**
+             * Required when enabled UNLESS `fullAccess` is true. There is no implicit
+             * "any command" mode: a restricted policy always needs a name allowlist.
+             */
             allowedCommands: z<string[], string[]>;
             /** Trusted roots a command cwd may use; defaults to the read roots. */
             cwdRoots: z<string[], string[]>;
@@ -344,11 +539,43 @@ export declare const ConfigSchema: z<Schemastery.ObjectS<{
             /** "required": refuse to run when no OS sandbox can enforce the boundary. */
             sandbox: z<"required" | "preferred", "required" | "preferred">;
             envPassthrough: z<string[], string[]>;
+            /**
+             * Extra PATH entries used to RESOLVE an allowlisted name. Needed on hosts
+             * whose service PATH lacks the install prefix (for example
+             * `/opt/homebrew/bin` for a Homebrew `node`).
+             */
             pathEntries: z<string[], string[]>;
+            /**
+             * Administrator-only full access. When true the child runs with NO OS
+             * sandbox: any bare executable name resolves, any existing directory may be
+             * the cwd, and reads, writes, temp directories and the network are
+             * unconfined (codex `dangerFullAccess`). Default false, requires the
+             * `codex-app-server` backend, and can ONLY be set by this trusted
+             * configuration — no tool argument can reach it.
+             */
+            fullAccess: z<boolean, boolean>;
+            /**
+             * Absolute path to the codex executable for the app-server backend. Empty
+             * means unset; the bridge never guesses it from PATH.
+             */
+            codexBin: z<string, string>;
+            /** Extra argv for the app-server child, e.g. `-c key=value`. */
+            codexArgs: z<string[], string[]>;
+            /**
+             * Isolated CODEX_HOME for the app-server child, so it does not read the
+             * user's global ~/.codex configuration.
+             */
+            codexHome: z<string, string>;
+            backend: z<"sandbox-exec" | "codex-app-server", "sandbox-exec" | "codex-app-server">;
+            asyncMaxRuns: z<number, number>;
+            asyncMaxOutputBytes: z<number, number>;
         }>, Schemastery.ObjectT<{
             /** High-privilege; a local administrator must turn this on deliberately. */
             enabled: z<boolean, boolean>;
-            /** Required when enabled: there is no "any command" mode. */
+            /**
+             * Required when enabled UNLESS `fullAccess` is true. There is no implicit
+             * "any command" mode: a restricted policy always needs a name allowlist.
+             */
             allowedCommands: z<string[], string[]>;
             /** Trusted roots a command cwd may use; defaults to the read roots. */
             cwdRoots: z<string[], string[]>;
@@ -359,7 +586,36 @@ export declare const ConfigSchema: z<Schemastery.ObjectS<{
             /** "required": refuse to run when no OS sandbox can enforce the boundary. */
             sandbox: z<"required" | "preferred", "required" | "preferred">;
             envPassthrough: z<string[], string[]>;
+            /**
+             * Extra PATH entries used to RESOLVE an allowlisted name. Needed on hosts
+             * whose service PATH lacks the install prefix (for example
+             * `/opt/homebrew/bin` for a Homebrew `node`).
+             */
             pathEntries: z<string[], string[]>;
+            /**
+             * Administrator-only full access. When true the child runs with NO OS
+             * sandbox: any bare executable name resolves, any existing directory may be
+             * the cwd, and reads, writes, temp directories and the network are
+             * unconfined (codex `dangerFullAccess`). Default false, requires the
+             * `codex-app-server` backend, and can ONLY be set by this trusted
+             * configuration — no tool argument can reach it.
+             */
+            fullAccess: z<boolean, boolean>;
+            /**
+             * Absolute path to the codex executable for the app-server backend. Empty
+             * means unset; the bridge never guesses it from PATH.
+             */
+            codexBin: z<string, string>;
+            /** Extra argv for the app-server child, e.g. `-c key=value`. */
+            codexArgs: z<string[], string[]>;
+            /**
+             * Isolated CODEX_HOME for the app-server child, so it does not read the
+             * user's global ~/.codex configuration.
+             */
+            codexHome: z<string, string>;
+            backend: z<"sandbox-exec" | "codex-app-server", "sandbox-exec" | "codex-app-server">;
+            asyncMaxRuns: z<number, number>;
+            asyncMaxOutputBytes: z<number, number>;
         }>>;
     }>>;
 }>>;

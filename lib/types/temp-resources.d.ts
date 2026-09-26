@@ -17,6 +17,18 @@ export interface CleanupIo {
     exists(path: string): boolean;
     remove(path: string): void;
     removeWorktree?(path: string, workspacePath: string): void;
+    /**
+     * Whether a worktree still holds uncommitted work. Optional so tests and other
+     * hosts can inject the answer; when absent, a worktree is treated as dirty and
+     * is not force-removed.
+     */
+    worktreeDirty?(path: string, workspacePath: string): boolean;
+    /**
+     * Whether a path holds a finished deliverable (uncommitted task output or a
+     * completed handoff) that must survive cleanup. Optional; absent means "no
+     * artifact knowledge", so only the worktree checks apply.
+     */
+    artifactsPresent?(path: string): boolean;
 }
 export declare function normalizeWorkspacePath(path: string): string;
 /** Absolute path if `path` is inside `workspace` and is not the workspace root. */

@@ -276,3 +276,127 @@ test('discoverTempResources only records worktree / release-verify / notes / tar
     rmSync(workspace, { recursive: true, force: true });
   }
 });
+
+// ── cleanup must never force-delete a worktree that still holds work ────────
+
+/** A worktree-owned temp resource inside the workspace. */
+function ownedWorktree(path) {
+  return { ...owned(path), kind: 'worktree' };
+}
+
+/** An io stand-in that records every removal instead of touching the disk. */
+function recordingIo(overrides = {}) {
+  const removed = [];
+  const worktrees = [];
+  return {
+    removed,
+    worktrees,
+    io: {
+      exists: (path) => overrides.exists?.(path) ?? true,
+      remove: (path) => {
+        removed.push(path);
+        overrides.remove?.(path);
+      },
+      removeWorktree: (path) => {
+        worktrees.push(path);
+        overrides.removeWorktree?.(path);
+      },
+      worktreeDirty: (path) => overrides.worktreeDirty?.(path) ?? false,
+      artifactsPresent: (path) => overrides.artifactsPresent?.(path) ?? false,
+    },
+  };
+}
+
+test('cleanup keeps a worktree that still has uncommitted work', () => {
+  const root = mkdtempSync(join(tmpdir(), 'dsh-bridge-keeptree-'));
+  const tree = join(root, 'task-worktree');
+  mkdirSync(tree, { recursive: true });
+  writeFileSync(join(tree, 'work.txt'), 'uncommitted\n');
+  try {
+    const { io, removed, worktrees } = recordingIo({ worktreeDirty: () => true });
+    const result = cleanupTempResources([ownedWorktree(tree)], root, io);
+
+    assert.deepEqual(worktrees, [], 'a dirty worktree must not be force-removed');
+    assert.deepEqual(removed, [], 'and its directory must not be deleted either');
+    assert.equal(result.removed.length, 0);
+    assert.equal(result.warnings.length, 1);
+    assert.match(result.warnings[0], /uncommitted work/);
+    assert.equal(existsSync(tree), true, 'the work is still on disk');
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test('cleanup keeps a worktree that holds a finished deliverable', () => {
+  const root = mkdtempSync(join(tmpdir(), 'dsh-bridge-keepdeliv-'));
+  const tree = join(root, 'task-worktree');
+  mkdirSync(tree, { recursive: true });
+  writeFileSync(join(tree, 'DELIVERY.md'), '# delivery\n');
+  try {
+    const { io, removed, worktrees } = recordingIo({ artifactsPresent: () => true });
+    const result = cleanupTempResources([ownedWorktree(tree)], root, io);
+
+    assert.deepEqual(worktrees, []);
+    assert.deepEqual(removed, []);
+    assert.equal(result.warnings.length, 1);
+    assert.match(result.warnings[0], /finished deliverable/);
+    assert.equal(existsSync(tree), true);
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test('cleanup still removes a worktree that is clean and holds nothing', () => {
+  const root = mkdtempSync(join(tmpdir(), 'dsh-bridge-droptree-'));
+  const tree = join(root, 'task-worktree');
+  mkdirSync(tree, { recursive: true });
+  try {
+    const { io, removed, worktrees } = recordingIo();
+    const result = cleanupTempResources([ownedWorktree(tree)], root, io);
+
+    assert.deepEqual(worktrees, [tree], 'a clean, artifact-free worktree is still cleaned up');
+    assert.deepEqual(removed, [tree]);
+    assert.deepEqual(result.warnings, []);
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test('cleanup treats an unreadable worktree state as dirty rather than deletable', () => {
+  const root = mkdtempSync(join(tmpdir(), 'dsh-bridge-unknownstate-'));
+  const tree = join(root, 'task-worktree');
+  mkdirSync(tree, { recursive: true });
+  try {
+    // No worktreeDirty hook at all: the implementation must default to keeping.
+    const removed = [];
+    const worktrees = [];
+    const result = cleanupTempResources([ownedWorktree(tree)], root, {
+      exists: () => true,
+      remove: (path) => removed.push(path),
+      removeWorktree: (path) => worktrees.push(path),
+    });
+
+    assert.deepEqual(worktrees, []);
+    assert.deepEqual(removed, []);
+    assert.match(result.warnings[0], /uncommitted work/);
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test('cleanup default io treats a directory without git metadata as a deliverable', () => {
+  const root = mkdtempSync(join(tmpdir(), 'dsh-bridge-nogit-'));
+  const tree = join(root, 'plain-delivery');
+  mkdirSync(tree, { recursive: true });
+  writeFileSync(join(tree, 'result.txt'), 'the only copy\n');
+  try {
+    // No io injection: exercises the real default `artifactsPresent`.
+    const result = cleanupTempResources([ownedWorktree(tree)], root);
+
+    assert.deepEqual(result.removed, []);
+    assert.equal(result.warnings.length, 1);
+    assert.equal(existsSync(join(tree, 'result.txt')), true, 'the only copy survives');
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});

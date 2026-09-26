@@ -16,6 +16,7 @@ import type { AddressInfo } from 'node:net';
 import { randomUUID, timingSafeEqual } from 'node:crypto';
 import type { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import { StreamableHTTPServerTransport } from '@modelcontextprotocol/sdk/server/streamableHttp.js';
+import { callDiagnostics } from './diagnostics.js';
 import type { BridgeLogger } from './log.js';
 import { bridgeHttpUrl, isLoopbackHost } from './config.js';
 
@@ -72,6 +73,67 @@ function sendJson(res: ServerResponse, status: number, body: unknown): void {
   res.statusCode = status;
   res.setHeader('Content-Type', 'application/json');
   res.end(JSON.stringify(body));
+}
+
+/**
+ * Record that this listener received a call, before any handler runs.
+ *
+ * Only the method and the tool name are read out of the body; nothing else about
+ * the request is inspected or stored, and every value is allowlisted before it
+ * is kept. This is the "HTTP received" phase, so a later absence of
+ * `handler_started` is meaningful rather than a guess.
+ */
+function recordReceipt(body: unknown): string[] {
+  const correlationIds: string[] = [];
+  if (body === null || typeof body !== 'object') return correlationIds;
+  const messages = Array.isArray(body) ? body : [body];
+  for (const message of messages) {
+    if (message === null || typeof message !== 'object') continue;
+    const method = (message as { method?: unknown }).method;
+    if (typeof method !== 'string') continue;
+    const params = (message as { params?: unknown }).params;
+    const rawName = params !== null && typeof params === 'object'
+      ? (params as { name?: unknown }).name
+      : undefined;
+    // Mint the id HERE, once per message. The handler adopts it from the
+    // context established by `runWithRequests` around the dispatch, so a batch
+    // cannot collapse every message onto one id.
+    const correlationId = callDiagnostics.newCorrelationId();
+    // Bind it to this message's JSON-RPC id so the handler can find it even when
+    // several messages share one dispatch (a batch).
+    const requestId = (message as { id?: unknown }).id;
+    if (typeof requestId === 'string' || typeof requestId === 'number') {
+      callDiagnostics.bindRequestId(requestId, correlationId);
+    }
+    correlationIds.push(correlationId);
+    callDiagnostics.record({
+      correlationId,
+      phase: 'http_received',
+      method,
+      ...(typeof rawName === 'string' ? { tool: rawName } : {}),
+    });
+  }
+  return correlationIds;
+}
+
+/**
+ * Dispatch one parsed body so each of its messages runs under its own
+ * correlation context. `enterWith` in a loop would leave only the last id.
+ */
+async function dispatchWithReceipts(
+  body: unknown,
+  dispatch: () => Promise<void>,
+): Promise<void> {
+  const ids = recordReceipt(body);
+  if (ids.length === 0) return dispatch();
+  // Messages are dispatched sequentially by the transport, so one context per
+  // message is enough; the innermost id covers the handler that runs next.
+  let chain = () => dispatch();
+  for (const id of ids) {
+    const inner = chain;
+    chain = () => callDiagnostics.runWithRequest(id, inner);
+  }
+  return chain();
 }
 
 export function startHttpServer(
@@ -131,7 +193,7 @@ export function startHttpServer(
         if (existing !== undefined) {
           existing.lastActiveAt = Date.now();
           const parsedBody = req.method === 'POST' ? await readJsonBody(req) : undefined;
-          await existing.transport.handleRequest(req, res, parsedBody);
+          await dispatchWithReceipts(parsedBody, () => existing.transport.handleRequest(req, res, parsedBody));
           return;
         }
         if (sessionId !== undefined || req.method !== 'POST') {
@@ -167,7 +229,7 @@ export function startHttpServer(
           void entry?.server.close().catch(() => {});
         };
         const parsedBody = req.method === 'POST' ? await readJsonBody(req) : undefined;
-        await transport.handleRequest(req, res, parsedBody);
+        await dispatchWithReceipts(parsedBody, () => transport.handleRequest(req, res, parsedBody));
       } catch (error) {
         log.error(`MCP HTTP request failed: ${error instanceof Error ? error.message : String(error)}`);
         if (!res.headersSent) {

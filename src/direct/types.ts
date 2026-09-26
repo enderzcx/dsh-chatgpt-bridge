@@ -57,6 +57,50 @@ export interface DirectOpsExecPolicy {
   envPassthrough: string[];
   /** Extra PATH entries for command resolution. */
   pathEntries: string[];
+  /**
+   * Which local execution backend runs the argv vector.
+   *
+   * `sandbox-exec` (default) runs the command through the existing macOS
+   * Seatbelt plan. `codex-app-server` asks a local `codex app-server` to run it
+   * through its own OS sandbox; that path never creates a thread, turn, or
+   * model call. The chosen backend is reported in every result.
+   */
+  backend: 'sandbox-exec' | 'codex-app-server';
+  /**
+   * Executable used by the `codex-app-server` backend. An absolute path is
+   * required so the caller can never choose the binary; the empty string means
+   * unset, and the bridge then refuses rather than guessing from PATH.
+   */
+  codexBin: string;
+  /** App-server argv inserted before `app-server` (e.g. `-c key=value`). */
+  codexArgs: string[];
+  /**
+   * Isolated codex state directory, passed as CODEX_HOME.
+   *
+   * Measured: without this the child loads the user's ~/.codex/config.toml (it
+   * reported codexHome=<user home>/.codex), so the bridge would silently inherit
+   * whatever the user configured there. With it set to a bridge-owned directory
+   * the child reads that instead and the user's global config is untouched and
+   * unread. The empty string means unset.
+   */
+  codexHome: string;
+  /**
+   * Administrator-only full-access mode.
+   *
+   * When true, this surface stops confining the child: any allowlisted-name
+   * executable may be named (the allowlist is bypassed), the working directory may
+   * be any absolute path, and codex is given `dangerFullAccess` so there is no OS
+   * sandbox for reads, writes, temp directories or the network.
+   *
+   * It can ONLY be turned on by trusted server-side configuration. No tool
+   * argument can reach it. When it is on, results and `dsh_operator_roots` say so
+   * explicitly rather than continuing to claim a sandbox was applied.
+   */
+  fullAccess: boolean;
+  /** Bound on stored output per async run, per stream. */
+  asyncMaxOutputBytes: number;
+  /** Bound on concurrently live async runs. */
+  asyncMaxRuns: number;
 }
 
 export interface DirectOpsPolicy {
@@ -96,10 +140,63 @@ export interface DirectOpsPolicyView {
   writes_enabled: boolean;
   exec_enabled: boolean;
   exec_sandbox: DirectOpsExecPolicy['sandbox'];
+  /** Which local backend would run a command. */
+  exec_backend: DirectOpsExecPolicy['backend'];
+  /**
+   * Whether an OS-level sandbox can actually confine a command right now, for
+   * the backend in use. For `codex-app-server` this means a configured codex
+   * executable, because codex owns the confinement.
+   */
   sandbox_available: boolean;
   sandbox_kind: string;
-  network: 'deny' | 'allow';
-  filesystem: 'roots' | 'inherit';
+  /** Async runs need the codex backend; false means dsh_start_command refuses. */
+  async_runs: boolean;
+  /**
+   * Command write scope, independent of the file tools' roots.
+   * `unconfined` under administrator full access.
+   */
+  command_writable_roots: string[] | 'unconfined';
+  /**
+   * EFFECTIVE command-name policy: `any-on-path` when any bare executable name is
+   * accepted, `allowlist` when `allowed_commands` applies.
+   */
+  command_policy: 'any-on-path' | 'allowlist';
+  /** The configured allowlist, reported separately because it may not be in force. */
+  configured_allowed_commands: string[];
+  /** The configured cwd roots, reported separately because they may not be in force. */
+  configured_cwd_roots: string[];
+  /**
+   * EFFECTIVE sandbox demand. Under full access this is `none` even though the
+   * configured `exec.sandbox` may say `required`.
+   */
+  exec_sandbox_effective: DirectOpsExecPolicy['sandbox'] | 'none';
+  /** EFFECTIVE network reach; `unconfined` when no sandbox is applied. */
+  network: 'deny' | 'allow' | 'unconfined';
+  /** EFFECTIVE filesystem scope; `unconfined` when no sandbox is applied. */
+  filesystem: 'roots' | 'inherit' | 'unconfined';
+  /** Present only under full access: the configured values that are NOT in force. */
+  configured_network?: 'deny' | 'allow';
+  configured_filesystem?: 'roots' | 'inherit';
+  /**
+   * Administrator full-access mode. When true there is NO OS sandbox: reads,
+   * writes, cwd, temp directories and the network are unconfined, and `roots`
+   * must not be read as a boundary.
+   */
+  full_access: boolean;
+  /**
+   * Bounded, secret-free call-receipt diagnostics.
+   *
+   * In-memory for this process only: a restart empties it, which is why the
+   * coverage block states the window and the restart boundary. An absent record
+   * means "not observed within this window", never "the caller did not send it".
+   */
+  diagnostics: {
+    coverage: Record<string, unknown>;
+    /** Fingerprint of the real tools/list JSON this server advertises. */
+    tool_surface?: Record<string, unknown>;
+    /** Most recent receipts, bounded; contains no arguments or error text. */
+    recent: Record<string, unknown>[];
+  };
   roots: DirectOpsRootView[];
   allowed_commands: string[];
   limits: DirectOpsLimits;
@@ -137,6 +234,31 @@ export type DirectOpsErrorCode =
   | 'COMMAND_NOT_ALLOWED'
   | 'INVALID_ARGUMENT'
   | 'SPAWN_FAILED'
+  // ── codex-app-server backend ───────────────────────────────────────────────
+  /** exec.backend is codex-app-server but no codex executable was configured. */
+  | 'CODEX_BIN_UNCONFIGURED'
+  /** The configured policy has no faithful codex sandbox equivalent. */
+  | 'CODEX_POLICY_UNSUPPORTED'
+  /** The app server could not be started, answered badly, or died. */
+  | 'CODEX_SPAWN_FAILED'
+  | 'CODEX_RPC_ERROR'
+  | 'CODEX_REQUEST_TIMEOUT'
+  | 'CODEX_WRITE_FAILED'
+  | 'CODEX_BAD_RESULT'
+  | 'CODEX_NOT_RUNNING'
+  | 'CODEX_EXITED'
+  | 'CODEX_CLOSED'
+  | 'CODEX_ALREADY_STARTED'
+  | 'CODEX_EMPTY_COMMAND'
+  /** This client may only use the command/exec surface. */
+  | 'CODEX_METHOD_NOT_ALLOWED'
+  | 'CODEX_EXEC_FAILED'
+  // ── async runs ────────────────────────────────────────────────────────────
+  | 'RUN_NOT_FOUND'
+  | 'RUN_LIMIT_REACHED'
+  | 'RUN_TERMINATE_FAILED'
+  /** Async runs need the codex backend; the sandbox path cannot serve them. */
+  | 'ASYNC_UNSUPPORTED_BACKEND'
   | 'INTERNAL';
 
 export class DirectOpsError extends Error {

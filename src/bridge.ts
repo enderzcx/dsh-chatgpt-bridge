@@ -7,9 +7,9 @@
 import { randomUUID } from 'node:crypto';
 import { createRequire } from 'node:module';
 import type { Context } from '@deepseek-ai/cordis';
-import type { Agent, AgentOptions, ModelSelection } from '@deepseek-ai/dsh-agent';
+import type { Agent, AgentOptions, InboxTarget, ModelSelection } from '@deepseek-ai/dsh-agent';
 import { installModelSelection } from '@deepseek-ai/dsh-agent';
-import { createUserMessage } from '@deepseek-ai/dsh-llm';
+import { createUserMessage, type UserMessage } from '@deepseek-ai/dsh-llm';
 import {
   SessionId,
   SessionLogOffset,
@@ -30,6 +30,20 @@ import type { Workspace } from '@deepseek-ai/dsh-workspace';
 import type { ResolvedBridgeConfig } from './config.js';
 import type { BridgeLogger } from './log.js';
 import { redactText } from './redact.js';
+import {
+  durableSnapshot,
+  goalMessageOf,
+  hasNonTextBlocks,
+  liveSnapshot,
+  locatePending,
+  messageVersion,
+  pendingView,
+  positionResult,
+  replaceText,
+  targetFor,
+  type Delivery,
+  type PendingMessageView,
+} from './inbox.js';
 import {
   deriveStatus,
   foldPendingMessages,
@@ -265,6 +279,52 @@ export interface SessionSummary {
   status?: BridgeStatus;
   created_at: string;
   updated_at?: string;
+}
+
+/**
+ * Outcome of one accepted delivery.
+ *
+ * `state: 'queued'` means only that DSH's inbox holds the message: a later
+ * step or turn boundary claims it, and the durable log records that admission.
+ * `accepted` therefore never claims the model read or understood the text.
+ */
+export interface DeliveryResult {
+  session_id: string;
+  /**
+   * Legacy acknowledgement, preserved verbatim for older MCP clients.
+   *
+   * It carries the same narrow meaning it always had: DSH accepted the message
+   * into its pending inbox. It never means the model has read or understood it.
+   */
+  accepted: true;
+  message_id: string;
+  /** The pending list the message actually reached. */
+  target: 'next-turn' | 'next-step';
+  delivery: Delivery;
+  /**
+   * `queued` means DSH still holds it in a pending list. `admitted` means a turn
+   * or step boundary already claimed it into the transcript before this receipt
+   * was built — a real outcome, not a failure, and never a reason to re-send.
+   */
+  state: 'queued' | 'admitted';
+  /** Content digest of exactly what was queued; pass it back to refuse stale mutations. */
+  version: string;
+  queue: { nextTurn: number; nextStep: number };
+  note: string;
+}
+
+/** Outcome of a queue mutation, with the position it occupied before. */
+export interface MessageMutationResult {
+  message_id: string;
+  target: 'next-turn' | 'next-step';
+  delivery: Delivery;
+  index: number;
+  /** Content digest after the mutation. */
+  version: string;
+  /** `steer` is DSH's own queue action name for promoting a queued turn. */
+  action: 'steer' | 'edit' | 'withdraw';
+  previous: { message_id: string; target: 'next-turn' | 'next-step'; delivery: Delivery; index: number; version: string };
+  queue: { nextTurn: number; nextStep: number };
 }
 
 export interface ResultView {
@@ -749,27 +809,544 @@ export class Bridge {
       }
     }
     if (initialMessage !== undefined && initialMessage.trim() !== '') {
-      agent.followup(
+      // A session's opening prompt owns its own first turn: pin the delivery
+      // target instead of inheriting whatever the queue defaults become.
+      agent.send(
         createUserMessage({
           content: [{ type: 'text', text: initialMessage }],
           source: { kind: 'user' },
         }),
+        'next-turn',
+        true,
       );
     }
     return this.viewOf(agent);
   }
 
   async sendMessage(sessionId: string, message: string): Promise<{ session_id: string; accepted: boolean }> {
+    const delivered = await this.deliverMessage(sessionId, message, 'followup');
+    return { session_id: delivered.session_id, accepted: delivered.accepted };
+  }
+
+  // ── pending input / steering ──────────────────────────────────────────────
+  //
+  // Delivery and queue management are expressed entirely through DSH's own
+  // Agent inbox. Delivery uses `send`; repositioning reuses the same
+  // `remove(id)` + `steer(message)` sequence the DSH session controller's own
+  // queue command uses; edit and withdraw use the inbox's `replace`/`remove`.
+  // The bridge keeps no queue of its own, so one message cannot be delivered
+  // twice and no hand-rolled splice ever stands in for a real steer.
+
+  /**
+   * Deliver one message to the live agent's inbox.
+   * @param sessionId - the session that owns the agent.
+   * @param message - the text to deliver; must not be blank.
+   * @param delivery - `followup` queues its own turn (DSH's default), `steer`
+   *   is consumed at the nearest step boundary.
+   * @returns the accepted identity and the destination it actually reached.
+   */
+  async deliverMessage(sessionId: string, message: string, delivery: Delivery = 'followup'): Promise<DeliveryResult> {
     if (message.trim() === '') throw new BridgeError('EMPTY_MESSAGE', 'message must not be empty');
+    if (delivery !== 'followup' && delivery !== 'steer') {
+      throw new BridgeError('DELIVERY_UNSUPPORTED', `delivery must be "followup" or "steer", received ${JSON.stringify(delivery)}`);
+    }
     this.adopt(sessionId);
     const agent = await this.ensureAgent(sessionId);
-    agent.followup(
-      createUserMessage({
-        content: [{ type: 'text', text: message }],
-        source: { kind: 'user' },
-      }),
+    const inbox = this.requireInbox(sessionId, agent);
+    const created = createUserMessage({
+      content: [{ type: 'text', text: message }],
+      source: { kind: 'user' },
+    });
+    const messageId = String(created.id);
+    // Snapshot the log length before delivering, so "was this admitted?" asks
+    // about this delivery rather than about an unrelated earlier message.
+    const eventsBefore = this.eventsOf(agent).length;
+    // DSH's one delivery primitive; `followup` and `steer` are thin wrappers.
+    agent.send(created, targetFor(delivery), true);
+
+    // Read back by identity. A step boundary can claim the message before this
+    // line runs — a steer is consumed at the very next step — so "not in the
+    // inbox" does not by itself mean the delivery failed. Check the transcript
+    // for the same message id before reporting anything.
+    const landed = locatePending(liveSnapshot(agent), messageId);
+    if (landed === undefined && !this.wasAdmittedSince(agent, messageId, eventsBefore)) {
+      throw new BridgeError(
+        'DELIVERY_NOT_ACCEPTED',
+        `DSH holds no pending copy of message ${messageId} and the transcript has no record of it; the queue may have been cleared concurrently. Re-read the queue before retrying.`,
+        {
+          session_id: sessionId,
+          message_id: messageId,
+          requested_delivery: delivery,
+          queue: this.queueState(agent),
+        },
+      );
+    }
+    if (landed === undefined) {
+      // Consumed faster than this receipt: report that truthfully instead of
+      // claiming it is still queued. Nothing is re-delivered.
+      return {
+        session_id: sessionId,
+        accepted: true,
+        message_id: messageId,
+        target: targetFor(delivery),
+        delivery,
+        state: 'admitted',
+        version: messageVersion(created),
+        queue: this.queueState(agent),
+        note: 'accepted and already claimed into the transcript before this receipt was built; it is not queued now. This does not mean the model has read it.',
+      };
+    }
+    const target = landed.target;
+    if (target !== targetFor(delivery)) {
+      // DSH parks waking input for the next turn when it arrives after an
+      // active cancellation. Report where it really landed, not the request.
+      this.log.warn(`message ${messageId} was parked in ${target} instead of ${targetFor(delivery)} (active cancellation)`);
+    }
+    return {
+      session_id: sessionId,
+      accepted: true,
+      message_id: messageId,
+      target,
+      delivery: target === 'next-step' ? 'steer' : 'followup',
+      state: 'queued',
+      version: messageVersion(created),
+      queue: this.queueState(agent),
+      note:
+        target === 'next-step'
+          ? 'queued for the next step boundary; not yet part of the transcript'
+          : 'queued as its own next turn; not yet part of the transcript',
+    };
+  }
+
+  /** Whether the transcript gained this identity after {@link fromIndex}. */
+  private wasAdmittedSince(agent: Agent, messageId: string, fromIndex: number): boolean {
+    const wanted = String(messageId);
+    const events = this.eventsOf(agent);
+    // Scan the whole log, not only the tail: a claim can land slightly earlier
+    // than the snapshot, and a false "not admitted" would be worse than a scan.
+    return events.some((event) => event.type === 'user/message' && String((event.data as { id?: unknown }).id) === wanted);
+  }
+
+  /**
+   * List the pending inbox with stable identities, in the order DSH claims it.
+   *
+   * Read-only: a live agent is read from its own inbox, and a cold session is
+   * read from the durable log's inbox splices. An idle session is never woken
+   * and no agent is created or resumed just to answer this.
+   * @param sessionId - the session to read.
+   * @param maxChars - per-message text bound.
+   * @returns both pending lists, their sizes, and whether the agent is live.
+   */
+  async listPendingMessages(
+    sessionId: string,
+    maxChars?: number,
+  ): Promise<{
+    session_id: string;
+    live: boolean;
+    agent_status?: 'idle' | 'running';
+    next_step: PendingMessageView[];
+    next_turn: PendingMessageView[];
+    total: number;
+  }> {
+    if (sessionId.trim() === '') throw new BridgeError('SESSION_REQUIRED', 'session_id is required');
+    const view = await this.loadView(sessionId);
+    const snapshot = view.agent === undefined ? durableSnapshot(view.events) : liveSnapshot(view.agent);
+    const limit = maxChars ?? this.cfg.sessionMaxChars;
+    const revision = this.goalStore.get(sessionId)?.revision;
+    const nextStep = snapshot.nextStep.map((message, index) => pendingView(message, 'next-step', index, limit, revision));
+    const nextTurn = snapshot.nextTurn.map((message, index) => pendingView(message, 'next-turn', index, limit, revision));
+    return {
+      session_id: sessionId,
+      live: view.agent !== undefined,
+      ...(snapshot.status === undefined ? {} : { agent_status: snapshot.status }),
+      next_step: nextStep,
+      next_turn: nextTurn,
+      total: nextStep.length + nextTurn.length,
+    };
+  }
+
+  /**
+   * Move one queued `next-turn` message in front of the agent as steering.
+   *
+   * Mirrors the DSH session controller's own queue `steer` action exactly: the
+   * item must still be in `next-turn` and the agent must be `running`, and the
+   * move is `remove(id)` followed by `agent.steer(originalMessage)` — so the
+   * message is never copied, DSH's own wake/cancellation handling applies, and
+   * steering keeps its append order instead of being reversed by hand.
+   * @param sessionId - the session that owns the agent.
+   * @param messageId - identity of the pending message.
+   * @param expectedVersion - optional digest from a prior read; a mismatch refuses the move.
+   * @returns the message's new steering position.
+   */
+  async promotePendingMessage(
+    sessionId: string,
+    messageId: string,
+    expectedVersion?: string,
+  ): Promise<MessageMutationResult> {
+    return this.mutatePending(sessionId, messageId, 'steer', { expectedVersion });
+  }
+
+  /**
+   * Replace the text of one pending message, preserving its identity.
+   * @param sessionId - the session that owns the agent.
+   * @param messageId - identity of the pending message.
+   * @param message - the replacement text.
+   * @param expectedVersion - optional digest from a prior read; a mismatch refuses the edit.
+   * @returns the message's position after the edit.
+   */
+  async editPendingMessage(
+    sessionId: string,
+    messageId: string,
+    message: string,
+    expectedVersion?: string,
+  ): Promise<MessageMutationResult> {
+    if (message.trim() === '') throw new BridgeError('EMPTY_MESSAGE', 'message must not be empty');
+    return this.mutatePending(sessionId, messageId, 'edit', { text: message, expectedVersion });
+  }
+
+  /**
+   * Remove one pending message from the queue.
+   * @param sessionId - the session that owns the agent.
+   * @param messageId - identity of the pending message.
+   * @param expectedVersion - optional digest from a prior read; a mismatch refuses the withdrawal.
+   * @returns the position the message occupied before removal.
+   */
+  async withdrawPendingMessage(
+    sessionId: string,
+    messageId: string,
+    expectedVersion?: string,
+  ): Promise<MessageMutationResult> {
+    return this.mutatePending(sessionId, messageId, 'withdraw', { expectedVersion });
+  }
+
+  /** Whether the agent exposes the native steering capability and a live inbox. */
+  private static nativeSteerCapable(agent: Agent): boolean {
+    return agent.inbox !== undefined
+      && typeof agent.steer === 'function'
+      && typeof agent.send === 'function';
+  }
+
+  /**
+   * Put an undelivered message back at its recorded position.
+   *
+   * Only ever called after DSH was confirmed not to hold and not to have
+   * admitted the identity, so this cannot create a second copy. The identity is
+   * unique across both native lists, which the inbox enforces.
+   * @returns whether the restore was applied and verified.
+   */
+  private restorePending(
+    inbox: Agent['inbox'],
+    found: { message: UserMessage; target: InboxTarget; index: number },
+  ): 'restored' | 'recovery_required' {
+    const list = found.target === 'next-turn' ? inbox.nextTurn : inbox.nextStep;
+    // An interior position cannot be restored exactly once the list has moved,
+    // and DSH has no positional insert that could prove it. Only a position
+    // still at the tail can be re-appended and remain provably in order.
+    if (found.index !== list.length) return 'recovery_required';
+    try {
+      const id = String(found.message.id);
+      inbox.splice(found.target, list.length, 0, [found.message]);
+      const inTurn = inbox.nextTurn.filter((message) => String(message.id) === id).length;
+      const inStep = inbox.nextStep.filter((message) => String(message.id) === id).length;
+      const placed = found.target === 'next-turn' ? inbox.nextTurn : inbox.nextStep;
+      // Exactly one copy, the identical object, at the position it just left.
+      return inTurn + inStep === 1 && placed[found.index] === found.message
+        ? 'restored'
+        : 'recovery_required';
+    } catch {
+      return 'recovery_required';
+    }
+  }
+
+  /** The visible text of one pending message, for diagnostics only. */
+  private static inboxText(message: UserMessage): string {
+    return message.content
+      .filter((block) => block.type === 'text')
+      .map((block) => (block as { text: string }).text)
+      .join('\n');
+  }
+
+  /** Read the live agent's inbox, or explain why this session cannot be queued into. */
+  private requireInbox(sessionId: string, agent: Agent): Agent['inbox'] {
+    const inbox = agent.inbox;
+    if (inbox === undefined) {
+      throw new BridgeError(
+        'INBOX_UNAVAILABLE',
+        `session ${sessionId} has no agent inbox; its DSH profile does not mount the agent loop`,
+      );
+    }
+    return inbox;
+  }
+
+  /** Report the current native pending sizes. */
+  private queueState(agent: Agent): { nextTurn: number; nextStep: number } {
+    return { nextTurn: agent.inbox.nextTurn.length, nextStep: agent.inbox.nextStep.length };
+  }
+
+  /**
+   * Apply one queue mutation through the native inbox operations.
+   *
+   * Every guard runs against a single synchronous snapshot, so no step boundary
+   * can claim the message between the decision and the mutation. A message is
+   * only ever removed as the first half of an operation whose second half is
+   * the native re-delivery, which cannot silently fail: if the native call
+   * throws, the caller sees the error rather than a silently dropped message.
+   * @param sessionId - the session that owns the agent.
+   * @param messageId - identity of the pending message.
+   * @param action - the mutation to apply.
+   * @param options - replacement text for `edit`, and the caller's expected version.
+   * @returns the resulting position; for `withdraw`, the position before removal.
+   */
+  private async mutatePending(
+    sessionId: string,
+    messageId: string,
+    action: 'steer' | 'edit' | 'withdraw',
+    options: { text?: string; expectedVersion?: string } = {},
+  ): Promise<MessageMutationResult> {
+    if (sessionId.trim() === '') throw new BridgeError('SESSION_REQUIRED', 'session_id is required');
+    if (messageId.trim() === '') throw new BridgeError('MESSAGE_ID_REQUIRED', 'message_id is required');
+    this.adopt(sessionId);
+    const agent = await this.ensureAgent(sessionId);
+    const inbox = this.requireInbox(sessionId, agent);
+    const snapshot = liveSnapshot(agent);
+    const found = locatePending(snapshot, messageId);
+    if (found === undefined) throw this.staleMessageError(agent, sessionId, messageId, action);
+    this.refuseProtectedGoalMessage(sessionId, found.message, action);
+    const from = positionResult(found.message, found.target, found.index);
+    if (options.expectedVersion !== undefined && options.expectedVersion !== '' && options.expectedVersion !== from.version) {
+      throw new BridgeError(
+        'MESSAGE_VERSION_CONFLICT',
+        `message ${messageId} changed since it was read (expected ${options.expectedVersion}, found ${from.version}); the mutation was refused and nothing was overwritten. Re-read the pending list.`,
+        {
+          session_id: sessionId,
+          message_id: messageId,
+          action,
+          expected_version: options.expectedVersion,
+          actual_version: from.version,
+          queue: this.queueState(agent),
+        },
+      );
+    }
+    if (action === 'edit') {
+      if (hasNonTextBlocks(found.message)) {
+        throw new BridgeError(
+          'MESSAGE_EDIT_NON_TEXT',
+          `message ${messageId} carries content the bridge cannot re-send faithfully (attachments or non-text blocks); editing it by text would drop that data, so the edit was refused. Withdraw it and send a new message instead.`,
+          { session_id: sessionId, message_id: messageId, queue: this.queueState(agent) },
+        );
+      }
+      // A refusal here means the identity stopped being pending between the
+      // synchronous read above and this call, so classify it from the log
+      // rather than asserting a cause. Nothing is ever re-sent to recover.
+      if (!inbox.replace(found.message.id, replaceText(found.message, options.text ?? ''))) {
+        throw this.staleMessageError(agent, sessionId, messageId, action);
+      }
+      const after = locatePending(liveSnapshot(agent), messageId);
+      if (after === undefined) throw this.staleMessageError(agent, sessionId, messageId, action);
+      return {
+        ...positionResult(after.message, after.target, after.index),
+        action,
+        previous: from,
+        queue: this.queueState(agent),
+      };
+    }
+    if (action === 'withdraw') {
+      if (!inbox.remove(found.message.id)) {
+        throw this.staleMessageError(agent, sessionId, messageId, action);
+      }
+      return { ...from, action, previous: from, queue: this.queueState(agent) };
+    }
+    // steer: the DSH session controller's own queue rule, applied unchanged.
+    if (found.target !== 'next-turn') {
+      throw new BridgeError(
+        'MESSAGE_NOT_PROMOTABLE',
+        `message ${messageId} is already in next-step; only a message queued for a later turn can be promoted to steering.`,
+        { session_id: sessionId, message_id: messageId, action, target: found.target, queue: this.queueState(agent) },
+      );
+    }
+    if (agent.status !== 'running') {
+      throw new BridgeError(
+        'STEER_UNAVAILABLE',
+        `session ${sessionId} is not running (agent status ${JSON.stringify(agent.status)}), so its current turn cannot accept steering. Use dsh_start_goal/dsh_wait_goal to drive the session, or wait until it is running.`,
+        { session_id: sessionId, message_id: messageId, action, agent_status: agent.status, queue: this.queueState(agent) },
+      );
+    }
+    // Verify the native steering capability before anything leaves the queue, so
+    // a missing method is a clean refusal that never touches the inbox.
+    if (!Bridge.nativeSteerCapable(agent)) {
+      throw new BridgeError(
+        'STEER_UNAVAILABLE',
+        `session ${sessionId} cannot steer: its agent exposes no native steer()/send() on a live inbox, so the message was left exactly where it was.`,
+        { session_id: sessionId, message_id: messageId, action, reason: 'NATIVE_STEER_MISSING', queue: this.queueState(agent) },
+      );
+    }
+    const steerIndex = inbox.nextStep.length;
+    if (!inbox.remove(found.message.id)) {
+      throw this.staleMessageError(agent, sessionId, messageId, action);
+    }
+    // Re-deliver the identical object so DSH owns the wake and cancellation
+    // handling.
+    try {
+      agent.steer(found.message);
+    } catch (error) {
+      // The removal is the only irreversible step, so a failure here is checked
+      // against DSH's own state before anything is claimed: a throw does not
+      // prove the message went nowhere (DSH can accept a delivery and reject a
+      // later phase), and re-sending a delivered message would duplicate it.
+      const detail = redactText(error instanceof Error ? error.message : String(error));
+      const pendingNow = locatePending(liveSnapshot(agent), messageId);
+      if (pendingNow !== undefined) {
+        // DSH kept the message: it is queued, just not where the caller asked.
+        this.log.warn(`steer() rejected ${messageId} but DSH retained it in ${pendingNow.target}`);
+        throw new BridgeError(
+          'STEER_REDELIVERY_FAILED',
+          `steering ${messageId} was rejected (${detail}), but DSH still holds it in ${pendingNow.target}; it is queued exactly once and was not lost.`,
+          {
+            session_id: sessionId,
+            message_id: messageId,
+            action,
+            reason: detail,
+            delivery_status: 'queued',
+            queue: this.queueState(agent),
+          },
+        );
+      }
+      if (this.wasAdmitted(agent, messageId)) {
+        this.log.warn(`steer() rejected ${messageId} but DSH already admitted it to the transcript`);
+        throw new BridgeError(
+          'STEER_REDELIVERY_FAILED',
+          `steering ${messageId} was rejected after it was already claimed (${detail}); it is in the transcript exactly once.`,
+          {
+            session_id: sessionId,
+            message_id: messageId,
+            action,
+            reason: detail,
+            delivery_status: 'admitted',
+            queue: this.queueState(agent),
+          },
+        );
+      }
+      // Undelivered: put the identical object back at its recorded position.
+      const recovery = this.restorePending(inbox, found);
+      this.log.error(`steering ${messageId} failed after it left next-turn: ${detail} (recovery: ${recovery})`);
+      if (recovery === 'restored') {
+        throw new BridgeError(
+          'STEER_REDELIVERY_FAILED',
+          `steering ${messageId} was rejected (${detail}). The message was not delivered, so it has been restored to its previous queue position and remains queued exactly once.`,
+          {
+            session_id: sessionId,
+            message_id: messageId,
+            action,
+            reason: detail,
+            delivery_status: 'not_delivered',
+            recovery: 'restored',
+            queue: this.queueState(agent),
+          },
+        );
+      }
+      // Recovery could not be proven, so say so instead of implying no loss.
+      throw new BridgeError(
+        'STEER_RECOVERY_REQUIRED',
+        `steering ${messageId} was rejected (${detail}) and the message could not be put back; it is NOT queued now. Re-send it with dsh_send_message.`,
+        {
+          session_id: sessionId,
+          message_id: messageId,
+          action,
+          reason: detail,
+          delivery_status: 'not_delivered',
+          recovery: 'recovery_required',
+          text: redactText(Bridge.inboxText(found.message)),
+          source_kind: found.message.source.kind,
+          queue: this.queueState(agent),
+        },
+      );
+    }
+    const after = locatePending(liveSnapshot(agent), messageId);
+    return {
+      ...(after === undefined
+        ? { ...from, target: 'next-step' as const, delivery: 'steer' as const, index: steerIndex }
+        : positionResult(after.message, after.target, after.index)),
+      action,
+      previous: from,
+      queue: this.queueState(agent),
+    };
+  }
+
+  /**
+   * Refuse a mutation that would contradict the supervised-Goal record.
+   *
+   * Goal control envelopes are the durable statement of the Goal, and the
+   * bridge reconciles them against the transcript. Editing, withdrawing or
+   * re-steering one behind the record's back — or pushing a superseded revision
+   * back into the current turn — is exactly the contradiction the Goal
+   * supervision path exists to prevent.
+   */
+  private refuseProtectedGoalMessage(
+    sessionId: string,
+    message: UserMessage,
+    action: 'steer' | 'edit' | 'withdraw',
+  ): void {
+    if (message.source.kind !== 'user') return;
+    const record = this.goalStore.get(sessionId);
+    const goal = goalMessageOf(message, record?.revision);
+    if (goal === undefined) return;
+    const target = 'dsh_update_goal';
+    if (goal.stale) {
+      throw new BridgeError(
+        'GOAL_MESSAGE_STALE',
+        `message ${String(message.id)} is a superseded Goal control message (rev ${goal.revision} of ${record?.revision}); it must not be edited, withdrawn or sent back into the current turn. Use ${target} to move the Goal, or withdraw it only if you intend to drop it.`,
+        { session_id: sessionId, message_id: String(message.id), action, goal_id: goal.goal_id, message_revision: goal.revision, current_revision: record?.revision },
+      );
+    }
+    throw new BridgeError(
+      'GOAL_MESSAGE_PROTECTED',
+      `message ${String(message.id)} is a supervised-Goal control message; ${action} would bypass the Goal revision rules. Use ${target} to revise, defer or resume the Goal instead.`,
+      { session_id: sessionId, message_id: String(message.id), action, goal_id: goal.goal_id, revision: goal.revision },
     );
-    return { session_id: sessionId, accepted: true };
+  }
+
+  /**
+   * Explain an identity that is no longer pending, using the durable log.
+   *
+   * The three refusals are deliberately distinct, because the caller's right
+   * next move differs: an admitted message is already in the transcript, a
+   * formerly-pending one was withdrawn or discarded, and an unrecognized one
+   * belongs to a different session or never existed.
+   */
+  private staleMessageError(agent: Agent, sessionId: string, messageId: string, action: string): BridgeError {
+    const details = { session_id: sessionId, message_id: messageId, action, queue: this.queueState(agent) };
+    if (this.wasAdmitted(agent, messageId)) {
+      return new BridgeError(
+        'MESSAGE_ALREADY_ADMITTED',
+        `message ${messageId} already entered a step and is part of the transcript; it can no longer be promoted, edited or withdrawn.`,
+        details,
+      );
+    }
+    if (this.eventsOf(agent).some((event) => event.type === 'agent/inbox/spliced' || event.type === 'user/message')) {
+      return new BridgeError(
+        'MESSAGE_NOT_PENDING',
+        `message ${messageId} is not pending in this inbox: it was already claimed, withdrawn, or discarded by a cancellation. Re-read the pending list before retrying.`,
+        details,
+      );
+    }
+    return new BridgeError('MESSAGE_ID_UNKNOWN', `message ${messageId} is not a known message of session ${sessionId}`, details);
+  }
+
+  /** Whether DSH already appended this identity to the durable transcript. */
+  private wasAdmitted(agent: Agent, messageId: string): boolean {
+    const wanted = String(messageId);
+    return this.eventsOf(agent).some(
+      (event) => event.type === 'user/message' && String((event.data as { id?: unknown }).id) === wanted,
+    );
+  }
+
+  /** Read a live agent's own durable event log. */
+  private eventsOf(agent: Agent): readonly SessionEvent[] {
+    try {
+      return agent.session.snapshotEvents();
+    } catch {
+      return [];
+    }
   }
 
   async cancelTask(sessionId: string): Promise<{ session_id: string; cancelled: boolean }> {
@@ -898,7 +1475,7 @@ export class Bridge {
       waiting,
       messages: summarizeMessages(view.events, items, chars),
       ...(span === undefined ? {} : { last_turn: { turn: span.turn, ...(span.reason === undefined ? {} : { reason: span.reason.kind }) } }),
-      ...this.goalFields(sessionId, view, status),
+      ...this.goalFields(sessionId, view, status, { readOnly: true }),
     };
   }
 
@@ -1016,7 +1593,10 @@ export class Bridge {
   }> {
     const view = await this.loadView(sessionId);
     const status = await this.statusOf(sessionId, view);
-    this.releaseWorkspaceIfTerminal(sessionId, status);
+    // A status read must not mutate anything. It deliberately does NOT release
+    // the workspace lock, write the Goal store, move the poll cursor, or clean
+    // up temp resources; those belong to the goal-driving and wait paths, which
+    // are annotated as write-capable.
     const pending = view.agent !== undefined
       ? { nextTurn: view.agent.inbox.nextTurn.length, nextStep: view.agent.inbox.nextStep.length }
       : foldPendingMessages(view.events);
@@ -1030,7 +1610,7 @@ export class Bridge {
       waiting: this.waitingFor(sessionId, view.events),
       ...(span === undefined ? {} : { last_turn: { turn: span.turn, ...(span.reason === undefined ? {} : { reason: span.reason.kind }) } }),
       updated_at: lastEventTime(view.events),
-      ...this.goalFields(sessionId, view, status),
+      ...this.goalFields(sessionId, view, status, { readOnly: true }),
     };
   }
 
@@ -1347,7 +1927,14 @@ export class Bridge {
     }
 
     const record = this.applyStartOrRevise(sessionId, input);
-    await this.sendMessage(sessionId, this.controlMessage(record, input.goal, input.plan, record.revision === 1 ? 'start' : 'revise'));
+    // Goal metadata is stated in durable text and reconciled against the
+    // transcript, so a goal message must keep the plain followup delivery that
+    // manual queue management can also see: one queue, one order.
+    await this.deliverMessage(
+      sessionId,
+      this.controlMessage(record, input.goal, input.plan, record.revision === 1 ? 'start' : 'revise'),
+      'followup',
+    );
     if (input.request_id !== undefined && input.request_id !== '') {
       this.goalRequests.set(input.request_id, { sessionId, fingerprint });
     }
@@ -1463,13 +2050,13 @@ export class Bridge {
     pruneBlockers(record, successfulKinds(observed.facts));
     this.goalStore.put(record);
     const intent = action === 'resume' ? 'resume' : action === 'defer' ? 'defer' : 'revise';
-    await this.sendMessage(sessionId, this.controlMessage(
+    await this.deliverMessage(sessionId, this.controlMessage(
       record,
       input.goal ?? record.goal,
       input.plan ?? record.plan,
       intent,
       resumeIds,
-    ));
+    ), 'followup');
     if (input.request_id !== undefined && input.request_id !== '') {
       this.goalRequests.set(input.request_id, { sessionId, fingerprint });
     }
@@ -1812,12 +2399,23 @@ export class Bridge {
     return true;
   }
 
-  private observeGoal(sessionId: string, view: LoadedView, status: BridgeStatus) {
+  private observeGoal(
+    sessionId: string,
+    view: LoadedView,
+    status: BridgeStatus,
+    options: { readOnly?: boolean } = {},
+  ) {
     const facts = foldGoalFacts(view.events);
-    this.recordObservedExecutions(sessionId, view, facts);
+    // A read-only observation must not record execution evidence, refresh a
+    // workspace baseline, or write the Goal store; it only derives a view.
+    if (options.readOnly !== true) this.recordObservedExecutions(sessionId, view, facts);
     let record = this.goalStore.get(sessionId);
     const succeeded = [...successfulKinds(facts)];
-    if (record !== undefined && succeeded.some((kind) => !record!.completed_action_kinds.includes(kind))) {
+    if (
+      options.readOnly !== true
+      && record !== undefined
+      && succeeded.some((kind) => !record!.completed_action_kinds.includes(kind))
+    ) {
       record = {
         ...record,
         completed_action_kinds: [...new Set([...record.completed_action_kinds, ...succeeded])],
@@ -1871,7 +2469,12 @@ export class Bridge {
     return { facts, todos, graph, blocked, waiting, record };
   }
 
-  private goalFields(sessionId: string, view: LoadedView, status: BridgeStatus): {
+  private goalFields(
+    sessionId: string,
+    view: LoadedView,
+    status: BridgeStatus,
+    options: { readOnly?: boolean } = {},
+  ): {
     todos?: { content: string; status: string }[];
     blocked?: BlockedInfo;
     deferred_steps?: string[];
@@ -1881,7 +2484,7 @@ export class Bridge {
     execution?: ExecutionSupervisionView;
     history?: GoalHistoryEvent[];
   } {
-    const { todos, graph, blocked, record: observedRecord } = this.observeGoal(sessionId, view, status);
+    const { todos, graph, blocked, record: observedRecord } = this.observeGoal(sessionId, view, status, options);
     const record = applyNativeGetGoalResult(observedRecord, undefined);
     const currentStep = blocked?.step
       ?? graph.steps.find((step) => step.status === 'in_progress' || step.status === 'ready')?.content
@@ -1921,8 +2524,10 @@ export class Bridge {
     status: BridgeStatus,
     waitedMs: number,
     waitSeconds: number,
+    options: { readOnly?: boolean } = {},
   ): Promise<GoalWaitResult> {
-    const { facts, todos, graph, blocked, waiting, record: observedRecord } = this.observeGoal(sessionId, view, status);
+    const readOnly = options.readOnly === true;
+    const { facts, todos, graph, blocked, waiting, record: observedRecord } = this.observeGoal(sessionId, view, status, options);
     const record = applyNativeGetGoalResult(observedRecord, undefined);
     const span = lastTurnSpan(view.events);
     const changedFiles = span === undefined ? [] : changedFilesForTurn(view.events, span.turn);
@@ -1947,7 +2552,9 @@ export class Bridge {
       ...(currentStep === undefined ? {} : { currentStep }),
     };
     const progressDelta = computeProgressDelta(deltaInput);
-    this.pollCursors.set(sessionId, nextPollCursor(deltaInput));
+    // The poll cursor is progress-reporting state; a read-only snapshot must not
+    // advance it, or a later real wait would under-report its delta.
+    if (!readOnly) this.pollCursors.set(sessionId, nextPollCursor(deltaInput));
     const mapped = mapWaitGoal({
       sessionId,
       status,
@@ -1971,12 +2578,20 @@ export class Bridge {
       execution: executionView(graph, currentStep),
       ...(record === undefined ? {} : { history: sliceHistory(record.history) }),
     });
-    if (mapped.terminal && record !== undefined && (status === 'completed' || status === 'cancelled' || status === 'failed')) {
+    if (
+      !readOnly
+      && mapped.terminal
+      && record !== undefined
+      && (status === 'completed' || status === 'cancelled' || status === 'failed')
+    ) {
       const already = record.history.some((event) => event.type === 'goal_completed' || event.type === 'goal_cancelled');
       if (!already) {
         this.goalStore.put(appendGoalEvent(record, status === 'cancelled' ? 'goal_cancelled' : 'goal_completed', { now: this.now() }));
       }
     }
+    // Terminal bookkeeping (lock release, temp cleanup) is a side effect and is
+    // skipped entirely for a read-only snapshot.
+    if (readOnly) return mapped;
     this.releaseWorkspaceIfTerminal(sessionId, status);
     if (!mapped.terminal) return mapped;
     const warning = this.cleanupGoalTemps(sessionId, view);

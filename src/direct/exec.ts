@@ -29,7 +29,7 @@ import { spawn, type ChildProcess } from 'node:child_process';
 import { randomBytes } from 'node:crypto';
 import { readdirSync, realpathSync, statSync, unlinkSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
-import { join } from 'node:path';
+import { isAbsolute, join } from 'node:path';
 import { resolveExistingTarget } from './path-security.js';
 import { scrubSecrets, scrubPathForDisplay } from './secrets.js';
 import {
@@ -39,6 +39,7 @@ import {
   sandboxExecAvailable,
   sandboxKind,
 } from './policy.js';
+import { runCommandViaCodex } from './codex-backend.js';
 import { DirectOpsError, type DirectOpsPolicy } from './types.js';
 
 const SANDBOX_EXEC_PATH = '/usr/bin/sandbox-exec';
@@ -69,21 +70,40 @@ export interface ExecResult {
   stdout_truncated: boolean;
   stderr_truncated: boolean;
   max_output_bytes: number;
+  /** Which local backend actually ran the command. */
+  backend: 'sandbox-exec' | 'codex-app-server';
   sandbox: {
     kind: string;
-    network: 'deny' | 'allow';
-    /** 'roots' means reads AND writes are confined by the OS sandbox. */
-    filesystem: 'roots' | 'inherit';
+    /** EFFECTIVE reach; `unconfined` whenever no sandbox is applied. */
+    network: 'deny' | 'allow' | 'unconfined';
+    /** EFFECTIVE scope; `unconfined` whenever no sandbox is applied. */
+    filesystem: 'roots' | 'inherit' | 'unconfined';
     applied: boolean;
-    /** Cwd is reported so a caller can see it is a location, not a boundary. */
-    cwd_grants_writes: false;
+    /**
+     * Whether the cwd is itself writable. False under any sandboxed policy (a
+     * cwd is a location, not a grant); true only in administrator full access.
+     */
+    cwd_grants_writes: boolean;
+    /** Whether the cwd was confined to the configured cwd roots. */
+    cwd_restricted?: boolean;
+    /** Whether commands were limited to the allowlist. */
+    command_restricted?: boolean;
+    /** Present only when unconfined: the configured values NOT in force. */
+    configured_network?: 'deny' | 'allow';
+    configured_filesystem?: 'roots' | 'inherit';
     readable_roots?: string[];
-    writable_roots?: string[];
+    /** Configured write roots, or `unconfined` when there is no boundary. */
+    writable_roots?: string[] | 'unconfined';
+    codex_policy?: string;
+    read_scope?: string;
+    write_scope?: string;
+    note?: string;
+    timeout_evidence?: string;
   };
   env_keys: string[];
 }
 
-function buildChildEnv(policy: DirectOpsPolicy, overrides?: Record<string, string>): Record<string, string> {
+export function buildChildEnv(policy: DirectOpsPolicy, overrides?: Record<string, string>): Record<string, string> {
   const env: Record<string, string> = {};
   for (const key of policy.exec.envPassthrough) {
     const value = process.env[key];
@@ -110,7 +130,39 @@ function buildChildEnv(policy: DirectOpsPolicy, overrides?: Record<string, strin
   return env;
 }
 
-function resolveCwd(input: string | undefined, policy: DirectOpsPolicy): string {
+/** Whether `path` is one of `roots` or sits beneath one. */
+export function withinAnyRoot(path: string, roots: readonly string[]): boolean {
+  return roots.some((root) => {
+    const normalized = root.endsWith('/') ? root.slice(0, -1) : root;
+    return path === normalized || path.startsWith(`${normalized}/`);
+  });
+}
+
+export function resolveCwd(input: string | undefined, policy: DirectOpsPolicy): string {
+  // Administrator full access: the working directory may be any existing
+  // directory. Relative and non-existent paths are still refused.
+  if (policy.exec.fullAccess) {
+    if (input === undefined || input === '') {
+      throw new DirectOpsError(
+        'INVALID_ARGUMENT',
+        'full-access mode requires an explicit absolute cwd; there is no default directory to guess',
+      );
+    }
+    if (!isAbsolute(input)) {
+      throw new DirectOpsError('INVALID_ARGUMENT', 'cwd must be an absolute path', { cwd: input });
+    }
+    let real: string;
+    try {
+      real = realpathSync.native(input);
+      if (!statSync(real).isDirectory()) {
+        throw new DirectOpsError('INVALID_ARGUMENT', 'cwd is not a directory', { cwd: input });
+      }
+    } catch (error) {
+      if (error instanceof DirectOpsError) throw error;
+      throw new DirectOpsError('INVALID_ARGUMENT', 'cwd does not exist', { cwd: input });
+    }
+    return real;
+  }
   const candidates = input !== undefined && input !== '' ? [input] : policy.exec.cwdRoots;
   if (candidates.length === 0) {
     throw new DirectOpsError(
@@ -126,6 +178,16 @@ function resolveCwd(input: string | undefined, policy: DirectOpsPolicy): string 
       const target = resolveExistingTarget(candidate, policy, { skipProtection: true });
       if (!statSync(target.canonical).isDirectory()) {
         errors.push(`${scrubPathForDisplay(target.canonical)}: not a directory`);
+        continue;
+      }
+      // A trusted root is not enough: `exec.cwdRoots` is its own, narrower list.
+      // Without this check a configured cwd root would be advisory, and a caller
+      // could run a command in any trusted root — including one the operator
+      // deliberately excluded from command execution.
+      if (!withinAnyRoot(target.canonical, policy.exec.cwdRoots)) {
+        errors.push(
+          `${scrubPathForDisplay(target.canonical)}: outside exec.cwdRoots (${policy.exec.cwdRoots.length} configured)`,
+        );
         continue;
       }
       return target.canonical;
@@ -246,6 +308,40 @@ function planSandbox(
   };
 }
 
+/**
+ * Build the ONE effective sandbox envelope used by every command result.
+ *
+ * `applied` alone decides whether the configured boundary is in force. When no
+ * OS sandbox confines the child, network and filesystem are reported as
+ * `unconfined` and the configured values move to `configured_*`, so a result can
+ * never say `network: "deny"` next to a child that was in fact online.
+ */
+export function effectiveSandboxEnvelope(input: {
+  kind: string;
+  applied: boolean;
+  fullAccess: boolean;
+  configured: { network: 'deny' | 'allow'; filesystem: 'roots' | 'inherit'; writableRoots: string[] };
+  extra?: Record<string, unknown>;
+}): ExecResult['sandbox'] {
+  const { kind, applied, fullAccess, configured, extra } = input;
+  return {
+    kind: applied ? kind : 'none',
+    network: applied ? configured.network : 'unconfined',
+    filesystem: applied ? configured.filesystem : 'unconfined',
+    applied,
+    cwd_grants_writes: fullAccess,
+    cwd_restricted: applied,
+    command_restricted: !fullAccess,
+    ...(applied ? {} : { configured_network: configured.network, configured_filesystem: configured.filesystem }),
+    // A confined backend with no write roots has no writable path at all; report
+    // that as an empty list rather than pretending a boundary exists.
+    ...(applied
+      ? (configured.writableRoots.length > 0 ? { writable_roots: configured.writableRoots } : {})
+      : { writable_roots: 'unconfined' as const }),
+    ...(extra ?? {}),
+  };
+}
+
 export async function runCommand(input: ExecInput, policy: DirectOpsPolicy): Promise<ExecResult> {
   const started = Date.now();
   if (!policy.enabled) {
@@ -260,6 +356,9 @@ export async function runCommand(input: ExecInput, policy: DirectOpsPolicy): Pro
   }
   if (input.args !== undefined && (!Array.isArray(input.args) || input.args.some((item) => typeof item !== 'string'))) {
     throw new DirectOpsError('INVALID_ARGUMENT', 'args must be an array of strings');
+  }
+  if (policy.exec.backend === 'codex-app-server') {
+    return runCommandViaCodexBackend(input, policy, started);
   }
   const timeoutMs = Math.min(
     input.timeout_ms !== undefined && input.timeout_ms > 0 ? Math.trunc(input.timeout_ms) : policy.limits.execTimeoutMs,
@@ -310,19 +409,22 @@ export async function runCommand(input: ExecInput, policy: DirectOpsPolicy): Pro
     stdout_truncated: outcome.stdoutTruncated,
     stderr_truncated: outcome.stderrTruncated,
     max_output_bytes: maxOutput,
-    sandbox: {
+    backend: 'sandbox-exec',
+    sandbox: effectiveSandboxEnvelope({
       kind: sandboxKind(),
-      network: policy.exec.network,
-      filesystem: policy.exec.filesystem,
       applied: plan.applied,
-      cwd_grants_writes: false,
+      // This backend cannot serve full access (it is refused at resolution), so
+      // `applied` alone decides what is reported as effective.
+      fullAccess: false,
+      configured: {
+        network: policy.exec.network,
+        filesystem: policy.exec.filesystem,
+        writableRoots: plan.writableRoots,
+      },
       ...(plan.applied && policy.exec.filesystem === 'roots'
-        ? {
-          readable_roots: policy.roots.map((root) => root.real),
-          writable_roots: plan.writableRoots,
-        }
+        ? { extra: { readable_roots: policy.roots.map((root) => root.real) } }
         : {}),
-    },
+    }),
     env_keys: Object.keys(childEnv).sort(),
   };
 }
@@ -468,3 +570,83 @@ function spawnBounded(options: {
 }
 
 export { sandboxExecAvailable };
+
+/**
+ * Run one command through the codex app-server backend.
+ *
+ * Shares the caller-facing envelope with the sandbox-exec path so
+ * `dsh_run_command` keeps one result shape and one set of limits, and reports
+ * the sandbox that was really applied rather than the one that was requested.
+ */
+async function runCommandViaCodexBackend(
+  input: ExecInput,
+  policy: DirectOpsPolicy,
+  started: number,
+): Promise<ExecResult> {
+  const timeoutMs = Math.min(
+    input.timeout_ms !== undefined && input.timeout_ms > 0 ? Math.trunc(input.timeout_ms) : policy.limits.execTimeoutMs,
+    policy.limits.execMaxTimeoutMs,
+  );
+  const maxOutput = Math.min(
+    input.max_output_bytes !== undefined && input.max_output_bytes > 0
+      ? Math.trunc(input.max_output_bytes)
+      : policy.limits.execMaxOutputBytes,
+    policy.limits.execMaxOutputBytes,
+  );
+  const cwd = resolveCwd(input.cwd, policy);
+  const args = (input.args ?? []).map((item) => String(item));
+  const childEnv = buildChildEnv(policy, input.env);
+
+  const outcome = await runCommandViaCodex(
+    { cmd: input.cmd, args, cwd, timeoutMs, maxOutputBytes: maxOutput, env: childEnv },
+    policy,
+  );
+
+  const stdout = scrubSecrets(outcome.stdout);
+  const stderr = scrubSecrets(outcome.stderr);
+  return {
+    cmd: input.cmd,
+    argv: [input.cmd, ...args],
+    cwd,
+    resolved_binary: outcome.resolvedBinary,
+    exit_code: outcome.exitCode,
+    // codex returns an exit code, not a POSIX signal, so no signal is claimed.
+    signal: null,
+    // Never derived from `exitCode === 124`: a command may exit 124 itself.
+    // Only the adapter's own evidence sets this.
+    timed_out: outcome.timedOut,
+    duration_ms: Date.now() - started,
+    stdout,
+    stderr,
+    stdout_bytes: Buffer.byteLength(stdout, 'utf8'),
+    stderr_bytes: Buffer.byteLength(stderr, 'utf8'),
+    // Truncation is the server's own report when it has one; byte-count
+    // inference is only a fallback, because "the buffer is full" is not proof
+    // that anything was dropped.
+    stdout_truncated: outcome.stdoutTruncated ?? Buffer.byteLength(stdout, 'utf8') >= maxOutput,
+    stderr_truncated: outcome.stderrTruncated ?? Buffer.byteLength(stderr, 'utf8') >= maxOutput,
+    max_output_bytes: maxOutput,
+    backend: 'codex-app-server',
+    sandbox: effectiveSandboxEnvelope({
+      kind: 'codex-app-server',
+      applied: outcome.sandbox.describe.sandboxed !== false,
+      fullAccess: policy.exec.fullAccess,
+      configured: {
+        network: policy.exec.network,
+        filesystem: policy.exec.filesystem,
+        writableRoots: policy.exec.writableRoots,
+      },
+      extra: {
+        codex_policy: String(outcome.sandbox.describe.codex_policy ?? ''),
+        ...(outcome.sandbox.describe.note === undefined ? {} : { note: String(outcome.sandbox.describe.note) }),
+        ...(outcome.sandbox.describe.read_scope === undefined
+          ? {}
+          : { read_scope: String(outcome.sandbox.describe.read_scope) }),
+        ...(outcome.sandbox.describe.write_scope === undefined
+          ? {}
+          : { write_scope: String(outcome.sandbox.describe.write_scope) }),
+      },
+    }),
+    env_keys: Object.keys(childEnv).sort(),
+  };
+}

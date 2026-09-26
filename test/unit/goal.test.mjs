@@ -116,7 +116,9 @@ test('mapWaitGoal: waiting_for_approval does not auto-approve (Case 5)', () => {
   assert.equal(out.continuation_required, false);
   assert.equal(out.needs_user_action, true);
   assert.deepEqual(out.approval, approval);
-  assert.match(out.next_action, /Do not auto-approve/);
+  // Neutral wording, same guarantee: the approval is explicit and never automatic.
+  assert.match(out.next_action, /never granted automatically/);
+  assert.match(out.next_action, /approval_id/);
 });
 
 test('mapWaitGoal: waiting_for_user does not auto-answer (Case 6)', () => {
@@ -133,7 +135,9 @@ test('mapWaitGoal: waiting_for_user does not auto-answer (Case 6)', () => {
   assert.equal(out.continuation_required, false);
   assert.equal(out.needs_user_action, true);
   assert.deepEqual(out.question, question);
-  assert.match(out.next_action, /Do not guess/);
+  // Neutral wording, same guarantee: the answer is supplied, never invented.
+  assert.match(out.next_action, /never guessed/);
+  assert.match(out.next_action, /dsh_answer_question/);
 });
 
 test('mapWaitGoal: idle does not continue', () => {

@@ -3,7 +3,7 @@
  * Never deletes unmarked user files or the workspace root.
  */
 import { existsSync, rmSync } from 'node:fs';
-import { isAbsolute, relative, resolve, sep } from 'node:path';
+import { isAbsolute, join, relative, resolve, sep } from 'node:path';
 import { spawnSync } from 'node:child_process';
 import {
   parseMkdirPaths,
@@ -34,9 +34,26 @@ export interface CleanupIo {
   exists(path: string): boolean;
   remove(path: string): void;
   removeWorktree?(path: string, workspacePath: string): void;
+  /**
+   * Whether a worktree still holds uncommitted work. Optional so tests and other
+   * hosts can inject the answer; when absent, a worktree is treated as dirty and
+   * is not force-removed.
+   */
+  worktreeDirty?(path: string, workspacePath: string): boolean;
+  /**
+   * Whether a path holds a finished deliverable (uncommitted task output or a
+   * completed handoff) that must survive cleanup. Optional; absent means "no
+   * artifact knowledge", so only the worktree checks apply.
+   */
+  artifactsPresent?(path: string): boolean;
 }
 
 const RELEASE_NOTES = /(?:^|[/\\])release-notes-v[^/\\]+\.md$/i;
+/**
+ * Top-level names that mark a directory as a finished deliverable rather than a
+ * scratch worktree. If any is present, cleanup leaves the path alone.
+ */
+const DELIVERABLE_MARKERS = ['FINAL-DELIVERY.md', 'DELIVERY.md', 'final-delivery', 'dist'] as const;
 const RELEASE_VERIFY = /(?:^|[/\\])_release-verify(?:[/\\]|$)/i;
 const TARBALL = /(?:^|[/\\])[^/\\]+\.tgz$/i;
 
@@ -148,6 +165,34 @@ function defaultIo(): CleanupIo {
         windowsHide: true,
       });
     },
+    worktreeDirty: (path, workspacePath) => {
+      const result = spawnSync('git', ['status', '--porcelain'], {
+        cwd: path,
+        encoding: 'utf8',
+        timeout: 15_000,
+        windowsHide: true,
+      });
+      if (result.error !== undefined && result.error !== null) return true;
+      if (result.status !== 0) {
+        // A worktree git cannot read is exactly the case that must not be
+        // force-deleted: fall back to the enclosing repo's own record.
+        const fromParent = spawnSync('git', ['-C', workspacePath, 'status', '--porcelain'], {
+          cwd: workspacePath,
+          encoding: 'utf8',
+          timeout: 15_000,
+          windowsHide: true,
+        });
+        return fromParent.status !== 0;
+      }
+      return (result.stdout ?? '').trim() !== '';
+    },
+    artifactsPresent: (path) => {
+      // A worktree whose git metadata is gone was already turned into a plain
+      // deliverable directory by a previous task; deleting it would destroy the
+      // only copy of the result.
+      if (!existsSync(join(path, '.git'))) return true;
+      return DELIVERABLE_MARKERS.some((marker) => existsSync(join(path, marker)));
+    },
   };
 }
 
@@ -167,8 +212,21 @@ export function cleanupTempResources(
     const abs = resolveInsideWorkspace(resource.path, workspacePath);
     if (abs === undefined) continue;
     try {
-      if (resource.kind === 'worktree' && io.removeWorktree !== undefined) {
-        io.removeWorktree(abs, normalizeWorkspacePath(workspacePath));
+      if (resource.kind === 'worktree') {
+        // A goal's worktree is disposable only while it holds nothing that
+        // cannot be regenerated. A defaulted `true` keeps a worktree whose state
+        // cannot be read: refusing to delete is always the recoverable choice,
+        // while deleting a dirty one destroys work that may be the deliverable.
+        const dirty = io.worktreeDirty?.(abs, normalizeWorkspacePath(workspacePath)) ?? true;
+        const holdsArtifacts = io.artifactsPresent?.(abs) ?? false;
+        if (dirty || holdsArtifacts) {
+          warnings.push(
+            `${abs}: kept because it still holds ${dirty ? 'uncommitted work' : 'a finished deliverable'}; `
+              + 'remove it by hand once its contents are committed or copied out',
+          );
+          continue;
+        }
+        io.removeWorktree?.(abs, normalizeWorkspacePath(workspacePath));
       }
       if (io.exists(abs)) io.remove(abs);
       removed.push(abs);

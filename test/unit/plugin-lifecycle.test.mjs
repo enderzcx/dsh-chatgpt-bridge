@@ -15,13 +15,16 @@ const EXPECTED_TOOLS = [
   'dsh_create_goal',
   'dsh_create_session',
   'dsh_credential_status',
+  'dsh_edit_pending_message',
   'dsh_get_result',
   'dsh_get_session',
   'dsh_get_task_status',
   'dsh_health',
+  'dsh_list_pending_messages',
   'dsh_list_sessions',
   'dsh_list_workspaces',
   'dsh_pause_goal',
+  'dsh_promote_pending_message',
   'dsh_rerun_step',
   'dsh_resume_goal',
   'dsh_retry_step',
@@ -32,6 +35,7 @@ const EXPECTED_TOOLS = [
   'dsh_update_goal',
   'dsh_wait_goal',
   'dsh_wait_until_action_required',
+  'dsh_withdraw_pending_message',
 ];
 
 function freePort() {
@@ -129,7 +133,7 @@ test('createMcpServer registers all public dsh_* tools (v0.5.0)', () => {
   );
   const names = Object.keys(server._registeredTools).sort();
   assert.deepEqual(names, [...EXPECTED_TOOLS].sort());
-  assert.equal(names.length, 23);
+  assert.equal(names.length, 27);
 });
 
 test('package clean script is ESM-safe under type:module', () => {
@@ -197,7 +201,7 @@ test('current README and Goal dogfood stay aligned with the shipped control-plan
   const dogfood = readFileSync(new URL('../../scripts/goal-control-dogfood.mjs', import.meta.url), 'utf8');
 
   assert.match(readme, new RegExp(`v${manifest.version.replaceAll('.', '\\.')}`));
-  assert.match(readme, /tool count = 23/);
+  assert.match(readme, /tool count = 27/);
   assert.match(dogfood, new RegExp(`version:\\s*['"]${manifest.version.replaceAll('.', '\\.')}['"]`));
   assert.match(dogfood, /dsh_create_goal/);
   assert.match(dogfood, /dsh_wait_until_action_required/);
